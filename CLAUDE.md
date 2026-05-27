@@ -73,7 +73,63 @@ If you change `LOG_TAG` or the initial `LOGI()` message in `main.cpp`, update th
 
 The AVD is cached between runs (`actions/cache@v4` keyed on `avd-30-x86_64-v1`) — bump the key to force a clean recreate.
 
-**Performance benchmarking** is a separate concern — the user runs these on physical Galaxy Note10+ devices (Exynos 9825 and Snapdragon 855 variants). The benchmark code, when added, lives under `app/src/main/cpp/bench/` and is intended to be invocable both via the APK (as a JNI/native call from the NativeActivity) and as a standalone ELF executable pushed via `adb push ... /data/local/tmp/`. Desktop emulators (BlueStacks/MEmu/LDPlayer/Nox) are not used and are not CI-compatible.
+## Performance benchmarking — `cppbench`
+
+The benchmark harness under `app/src/main/cpp/bench/` exists to compare **Galaxy Note10+ Exynos 9825 (SM-N975F)** against **Note10+ Snapdragon 855 (SM-N975U)**. It is intentionally NOT run in CI — perf numbers from a virtualized x86_64 emulator are meaningless. CI only compile-checks the harness (the bench sources are linked into `libcppandroidtest.so`, so any compilation failure surfaces through the smoke workflow).
+
+### Build the standalone ELF
+
+`scripts/build-bench.sh` runs CMake with the NDK toolchain directly, sets `-DBUILD_BENCH_EXECUTABLE=ON`, and produces `build/bench-arm64/cppbench` (ARM64 PIE ELF). It auto-locates NDK 26.x at the standard Android Studio install paths; override with `ANDROID_NDK=/path/to/ndk`.
+
+### Push and run on a device
+
+```bash
+# One device connected via USB:
+bash scripts/run-bench.sh exynos                  # label this run "exynos"
+bash scripts/run-bench.sh snapdragon              # later, on the other device
+
+# Multiple devices — pass adb serial:
+bash scripts/run-bench.sh exynos RF8M12345ABC
+
+# Pass extra args to cppbench:
+bash scripts/run-bench.sh exynos auto --filter=stream --iters=20
+```
+
+JSON output lands in `results/<label>-<timestamp>.json`. The script auto-rebuilds the binary if missing.
+
+### Compare two runs
+
+```bash
+python scripts/compare.py results/exynos-*.json results/snapdragon-*.json
+```
+
+Prints per-cluster STREAM bandwidth with ratios. Extend with more metrics as benchmarks are added.
+
+### Benchmark list
+
+| Name | What it measures | Method | Where it lives |
+|---|---|---|---|
+| `stream` | DRAM bandwidth GB/s (copy/scale/add/triad) | McCalpin STREAM on 16 MB float arrays, best-of-N | `bench/cpu/stream.cpp` |
+| `latency` | L1d/L2/SLC/DRAM latency in ns/load | Pointer-chase, random Hamiltonian cycle, 4 KB → 64 MB sweep | `bench/cpu/latency.cpp` |
+| `neon_fma` | Single-core peak GFLOPS | `vfmaq_f32`/`vfmaq_f16` × 8 chains, GFLOPS reported per core | `bench/cpu/neon_fma.cpp` |
+
+CLI: `cppbench [--json] [--filter=NAME] [--iters=N] [--elems=N] [--list]`. Each benchmark is run per cluster (LITTLE / mid / big) using `sched_setaffinity` to pin to that cluster's CPUs. Cluster topology is discovered at runtime from `/sys/devices/system/cpu/cpu*/cpufreq/cpuinfo_max_freq` — no SoC-specific hardcoding.
+
+### Methodology
+
+For reproducible numbers between Exynos and Snapdragon devices:
+
+1. Same Android version and security patch (`getprop ro.build.fingerprint`).
+2. Battery ≥ 80%, charger plugged, display on at max brightness.
+3. Airplane mode + Do Not Disturb to kill background scheduling noise.
+4. 3 warm-up runs, 5 measured runs; report median + IQR.
+5. 10-minute cooldown between benchmark sets (Exynos 9825 throttles within ~3-5 min of sustained big-cluster load).
+
+### Architecture notes
+
+The harness is built into both `libcppandroidtest.so` (currently no runtime trigger; serves as CI compile-check) and the standalone `cppbench` ELF (gated by the `BUILD_BENCH_EXECUTABLE` CMake option, set only by `scripts/build-bench.sh`). NEON intrinsics are guarded by `#if defined(__aarch64__)` so the x86_64 .so build for the smoke emulator still compiles — non-arm64 paths return sentinel `-1` GFLOPS.
+
+Desktop emulators (BlueStacks/MEmu/LDPlayer/NoxPlayer) are not used. They translate ARM instructions for x86 hosts; perf numbers are meaningless and the NEON paths don't execute natively anyway.
 
 ## Local development environment
 
