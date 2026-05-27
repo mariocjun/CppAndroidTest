@@ -79,37 +79,7 @@ jobs:
           force-avd-creation: false
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot-save -noaudio -no-boot-anim
           disable-animations: true
-          script: |
-            set -e
-            adb install -r app/build/outputs/apk/debug/app-debug.apk
-            adb logcat -c
-            adb shell am start -W -n com.example.cppandroidtest/android.app.NativeActivity
-            sleep 8
-
-            PID=$(adb shell pidof com.example.cppandroidtest || true)
-            adb logcat -d > logcat-full.txt
-            adb logcat -d -s CppAndroidTest > native.log || true
-
-            echo "::group::Native log (CppAndroidTest tag)"
-            cat native.log
-            echo "::endgroup::"
-
-            if [ -z "$PID" ]; then
-              echo "::error::Process com.example.cppandroidtest is not running after 8s"
-              echo "::group::FATAL/DEBUG entries from logcat"
-              grep -E "FATAL|DEBUG|tombstone|signal|backtrace" logcat-full.txt | head -100 || true
-              echo "::endgroup::"
-              exit 1
-            fi
-
-            echo "OK: process alive, PID=$PID"
-
-            # Optional: verify the C++ side actually logged its hello message
-            if ! grep -q "Hello from C++ Native Activity" native.log; then
-              echo "::error::android_main never reached — libcppandroidtest.so loaded but entry not called?"
-              exit 1
-            fi
-            echo "OK: android_main reached"
+          script: bash scripts/smoke-check.sh
 
       - name: Upload logs
         if: always()
