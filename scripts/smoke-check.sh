@@ -16,6 +16,9 @@ LOG_TAG="${LOG_TAG:-CppAndroidTest}"
 EXPECT_LOG="${EXPECT_LOG:-Hello from C++ Native Activity}"
 WAIT_SECONDS="${WAIT_SECONDS:-8}"
 
+echo "==> Uninstalling any previous install (debug keystore differs between CI runners)"
+adb uninstall "$PACKAGE" 2>/dev/null || true
+
 echo "==> Installing $APK_PATH"
 adb install -r "$APK_PATH"
 

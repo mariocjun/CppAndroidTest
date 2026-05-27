@@ -12,7 +12,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(BENCH_SOURCES
     bench/affinity.cpp
     bench/soc_info.cpp
-    bench/cpu/stream.cpp)
+    bench/cpu/stream.cpp
+    bench/cpu/latency.cpp
+    bench/cpu/neon_fma.cpp)
 
 # ----------------------------------------------------------------------------
 # native_app_glue (NDK-shipped Activity bridge for NativeActivity apps)

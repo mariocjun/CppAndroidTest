@@ -14,6 +14,8 @@
 #include "soc_info.h"
 #include "timer.h"
 #include "cpu/stream.h"
+#include "cpu/latency.h"
+#include "cpu/neon_fma.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -54,7 +56,7 @@ void print_help() {
 }
 
 const std::vector<std::string>& available_benchmarks() {
-    static const std::vector<std::string> v = {"stream"};
+    static const std::vector<std::string> v = {"stream", "latency", "neon_fma"};
     return v;
 }
 
@@ -131,6 +133,18 @@ int main(int argc, char** argv) {
         if (args.elems > 0) cfg.elems = args.elems;
         auto r = bench::cpu::run_stream_per_cluster(cfg, clusters);
         results.emplace_back("stream", std::move(r));
+    }
+    if (wanted(args.filter, "latency")) {
+        bench::cpu::LatencyConfig cfg;
+        if (args.iters > 0) cfg.iterations = args.iters;
+        auto r = bench::cpu::run_latency_per_cluster(cfg, clusters);
+        results.emplace_back("latency", std::move(r));
+    }
+    if (wanted(args.filter, "neon_fma")) {
+        bench::cpu::NeonFmaConfig cfg;
+        if (args.iters > 0) cfg.iterations = args.iters;
+        auto r = bench::cpu::run_neon_fma_per_cluster(cfg, clusters);
+        results.emplace_back("neon_fma", std::move(r));
     }
 
     bench::Json top;
