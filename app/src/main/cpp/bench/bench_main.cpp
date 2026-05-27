@@ -13,15 +13,15 @@
 // Hardware enumeration (one-shot):
 //   cppbench --sensors    # all Android sensors with characteristics
 //   cppbench --cameras    # all cameras via NDK Camera2 (no capture, just metadata)
+//
+// All benchmarks are dispatched through bench::registry::dispatch — adding a
+// new benchmark is two lines (wrapper struct + tuple entry), this file does
+// not need to change.
 #include "affinity.h"
 #include "json.h"
+#include "registry.h"
 #include "soc_info.h"
 #include "timer.h"
-#include "cpu/stream.h"
-#include "cpu/latency.h"
-#include "cpu/neon_fma.h"
-#include "cpu/dot_int8.h"
-#include "cpu/sustained.h"
 #include "sensors/sensors.h"
 #include "camera/camera.h"
 #include "stream/streamer.h"
@@ -34,7 +34,7 @@
 
 namespace {
 
-struct Args {
+struct CliArgs {
     bool json = false;
     bool list = false;
     bool stream = false;
@@ -42,13 +42,13 @@ struct Args {
     bool dump_cameras = false;
     std::string filter;
     int iters = 0;
-    size_t elems = 0;
-    int interval_ms = 250;    // for --stream
-    int sensor_rate_us = 50000; // for --stream
+    std::size_t elems = 0;
+    int interval_ms = 250;
+    int sensor_rate_us = 50000;
 };
 
 bool arg_match(const char* a, const char* prefix, const char** value_out) {
-    size_t plen = std::strlen(prefix);
+    std::size_t plen = std::strlen(prefix);
     if (std::strncmp(a, prefix, plen) == 0) {
         if (a[plen] == '=') { *value_out = a + plen + 1; return true; }
         if (a[plen] == '\0') { *value_out = nullptr; return true; }
@@ -61,7 +61,8 @@ void print_help() {
         "cppbench — Android perf + sensors + camera enumeration / live stream\n\n"
         "Modes:\n"
         "  cppbench [--json] [--filter=NAME] [--iters=N] [--elems=N]\n"
-        "      Run benchmarks (default: stream, latency, neon_fma, dot_int8).\n"
+        "      Run benchmarks. Default selection: every registered benchmark\n"
+        "      except those marked opt-in (currently: sustained).\n"
         "  cppbench --stream [--interval-ms=N] [--sensor-rate-us=N]\n"
         "      Continuous NDJSON output of sensors+thermal+freqs until SIGINT.\n"
         "      Pipe through python scripts/dashboard.py for a live terminal view.\n"
@@ -72,16 +73,6 @@ void print_help() {
         "  cppbench --list\n"
         "      List available benchmark names.\n"
         "  cppbench --help\n");
-}
-
-const std::vector<std::string>& available_benchmarks() {
-    static const std::vector<std::string> v = {
-        "stream", "latency", "neon_fma", "dot_int8", "sustained"};
-    return v;
-}
-
-bool wanted(const std::string& filter, const std::string& name) {
-    return filter.empty() || name.find(filter) != std::string::npos;
 }
 
 bench::Json build_env_info() {
@@ -117,7 +108,7 @@ bench::Json build_env_info() {
 } // namespace
 
 int main(int argc, char** argv) {
-    Args args;
+    CliArgs args;
     for (int i = 1; i < argc; ++i) {
         const char* a = argv[i];
         const char* v = nullptr;
@@ -132,7 +123,7 @@ int main(int argc, char** argv) {
         if (arg_match(a, "--filter", &v) && v) { args.filter = v; continue; }
         if (arg_match(a, "--iters",  &v) && v) { args.iters = std::atoi(v); continue; }
         if (arg_match(a, "--elems",  &v) && v) {
-            args.elems = static_cast<size_t>(std::strtoull(v, nullptr, 10));
+            args.elems = static_cast<std::size_t>(std::strtoull(v, nullptr, 10));
             continue;
         }
         if (arg_match(a, "--interval-ms", &v) && v) { args.interval_ms = std::atoi(v); continue; }
@@ -143,26 +134,25 @@ int main(int argc, char** argv) {
     }
 
     if (args.list) {
-        for (const auto& n : available_benchmarks()) std::printf("%s\n", n.c_str());
+        for (const char* n : bench::registry::all_names()) std::printf("%s\n", n);
         return 0;
     }
 
     if (args.dump_sensors) {
-        auto j = bench::sensors::enumerate_json();
-        std::printf("%s\n", j.str().c_str());
+        std::printf("%s\n", bench::sensors::enumerate_json().str().c_str());
         return 0;
     }
 
     if (args.dump_cameras) {
-        auto j = bench::camera::enumerate_json();
-        std::printf("%s\n", j.str().c_str());
+        std::printf("%s\n", bench::camera::enumerate_json().str().c_str());
         return 0;
     }
 
     if (args.stream) {
-        bench::stream::StreamConfig cfg;
-        cfg.interval_ms = args.interval_ms;
-        cfg.sensor_rate_us = args.sensor_rate_us;
+        bench::stream::StreamConfig cfg{
+            .interval_ms = args.interval_ms,
+            .sensor_rate_us = args.sensor_rate_us,
+        };
         bench::stream::run(cfg);
         return 0;
     }
@@ -170,40 +160,12 @@ int main(int argc, char** argv) {
     auto env = build_env_info();
     auto clusters = bench::detect_clusters();
 
-    std::vector<std::pair<std::string, bench::Json>> results;
-
-    if (wanted(args.filter, "stream")) {
-        bench::cpu::StreamConfig cfg;
-        if (args.iters > 0) cfg.iterations = args.iters;
-        if (args.elems > 0) cfg.elems = args.elems;
-        auto r = bench::cpu::run_stream_per_cluster(cfg, clusters);
-        results.emplace_back("stream", std::move(r));
-    }
-    if (wanted(args.filter, "latency")) {
-        bench::cpu::LatencyConfig cfg;
-        if (args.iters > 0) cfg.iterations = args.iters;
-        auto r = bench::cpu::run_latency_per_cluster(cfg, clusters);
-        results.emplace_back("latency", std::move(r));
-    }
-    if (wanted(args.filter, "neon_fma")) {
-        bench::cpu::NeonFmaConfig cfg;
-        if (args.iters > 0) cfg.iterations = args.iters;
-        auto r = bench::cpu::run_neon_fma_per_cluster(cfg, clusters);
-        results.emplace_back("neon_fma", std::move(r));
-    }
-    if (wanted(args.filter, "dot_int8")) {
-        bench::cpu::DotInt8Config cfg;
-        if (args.iters > 0) cfg.iterations = args.iters;
-        auto r = bench::cpu::run_dot_int8_per_cluster(cfg, clusters);
-        results.emplace_back("dot_int8", std::move(r));
-    }
-    if (wanted(args.filter, "sustained")) {
-        bench::cpu::SustainedConfig cfg;
-        if (args.filter.find("sustained") != std::string::npos) {
-            auto r = bench::cpu::run_sustained_on_big_core(cfg, clusters);
-            results.emplace_back("sustained", std::move(r));
-        }
-    }
+    bench::registry::Args reg_args{
+        .filter = args.filter,
+        .iters = args.iters,
+        .elems = args.elems,
+    };
+    auto results = bench::registry::dispatch(reg_args, clusters);
 
     bench::Json top;
     top.kv("env", env);
@@ -218,13 +180,13 @@ int main(int argc, char** argv) {
     if (args.json) {
         std::printf("%s\n", top.str().c_str());
     } else {
+        auto soc = bench::collect_soc_info();
         std::printf("SoC:    %s (%s / %s)\n",
-                    bench::identify_soc(bench::collect_soc_info()).c_str(),
-                    bench::collect_soc_info().model.c_str(),
-                    bench::collect_soc_info().board.c_str());
+                    bench::identify_soc(soc).c_str(),
+                    soc.model.c_str(), soc.board.c_str());
         std::printf("CPUs:   %d total, %zu clusters\n",
                     bench::num_cpus(), clusters.size());
-        for (size_t i = 0; i < clusters.size(); ++i) {
+        for (std::size_t i = 0; i < clusters.size(); ++i) {
             const auto& c = clusters[i];
             std::printf("  cluster %zu: cpu%d-%d @ %.2f GHz (%d cores)\n",
                         i, c.min_id, c.max_id,

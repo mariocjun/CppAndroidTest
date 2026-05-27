@@ -1,9 +1,14 @@
 cmake_minimum_required(VERSION 3.22.1)
 project(cppandroidtest LANGUAGES CXX C)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+# NDK 26 ships Clang 17 which has full C++20. We use:
+#   - concepts        (bench/registry.h: Benchmark<T> constraint)
+#   - fold expressions ((try_one(bs), ...))
+#   - designated initializers (Config{.iterations = 10})
+#   - <span> if needed; not yet used
 
 # ----------------------------------------------------------------------------
 # Shared bench sources — compiled into both the APK's .so and the standalone
