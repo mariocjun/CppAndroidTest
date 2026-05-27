@@ -1,0 +1,60 @@
+# clang-tidy config for the cppbench harness.
+#
+# We turn on the four high-signal check families:
+#   bugprone-*           subtle correctness pitfalls
+#   performance-*        unnecessary copies, expensive ops in hot paths
+#   modernize-*          C++17/20/23 idioms over legacy patterns
+#   readability-*        clarity, naming, complexity
+#   cppcoreguidelines-*  the official ISO guidelines (curated below)
+#
+# Disabled checks are noisy or low-value for a perf-oriented native codebase:
+#   - modernize-use-trailing-return-type:    matter of style, not correctness
+#   - readability-magic-numbers / cppcg-...: bench loops legitimately use raw
+#                                            constants (cache sizes, iteration
+#                                            counts) — wrapping them in named
+#                                            constants hurts readability here.
+#   - cppcoreguidelines-pro-bounds-*:        unavoidable when working with C
+#                                            APIs (sysfs, /proc, ASensor).
+#   - cppcoreguidelines-pro-type-vararg:     printf in main and bench output
+#                                            uses snprintf/printf; vararg is
+#                                            the simpler tool there.
+#   - bugprone-easily-swappable-parameters:  Config structs deliberately have
+#                                            many same-type fields; the
+#                                            designated-initializer syntax
+#                                            keeps call sites unambiguous.
+#   - readability-identifier-length:         loop counters i/j/k are fine.
+#
+Checks: >
+  bugprone-*,
+  performance-*,
+  modernize-*,
+  readability-*,
+  cppcoreguidelines-*,
+  -modernize-use-trailing-return-type,
+  -readability-magic-numbers,
+  -readability-identifier-length,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -cppcoreguidelines-pro-bounds-array-to-pointer-decay,
+  -cppcoreguidelines-pro-bounds-pointer-arithmetic,
+  -cppcoreguidelines-pro-bounds-constant-array-index,
+  -cppcoreguidelines-pro-type-vararg,
+  -cppcoreguidelines-avoid-c-arrays,
+  -cppcoreguidelines-init-variables,
+  -bugprone-easily-swappable-parameters,
+  -modernize-avoid-c-arrays
+
+# Don't escalate warnings to errors here — CI runs clang-tidy in a reporting
+# capacity, not as a build gate (the C++ build is gated by the compiler).
+WarningsAsErrors: ''
+
+# Only analyse our own headers; ignore NDK sysroot and STL headers.
+HeaderFilterRegex: '.*bench/.*\.h$'
+
+# Inherit the project's .clang-format (we don't have one yet — when added,
+# this picks it up automatically).
+FormatStyle: file
+
+CheckOptions:
+  - { key: readability-function-cognitive-complexity.Threshold, value: '40' }
+  - { key: readability-function-size.LineThreshold,             value: '120' }
+  - { key: cppcoreguidelines-special-member-functions.AllowSoleDefaultDtor, value: 'true' }
