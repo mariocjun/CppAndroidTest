@@ -163,7 +163,7 @@ inline std::vector<std::pair<std::string, bench::Json>>
 dispatch(const Args& args, const std::vector<bench::CpuCluster>& clusters) {
     std::vector<std::pair<std::string, bench::Json>> results;
 
-    auto try_one = [&](auto& b) {
+    auto try_one = [&](auto&& b) {
         using B = std::decay_t<decltype(b)>;
         if (!wanted(args.filter, B::name)) return;
         // Opt-in benchmarks require the filter to explicitly name them
@@ -173,7 +173,11 @@ dispatch(const Args& args, const std::vector<bench::CpuCluster>& clusters) {
         results.emplace_back(B::name, b.run_per_cluster(cfg, clusters));
     };
 
-    std::apply([&](auto&... bs) { (try_one(bs), ...); }, Registry{});
+    // Materialise the tuple as an lvalue so std::apply unpacks it as lvalue
+    // references — needed by the forwarding-ref lambda above. Default-
+    // constructing the Registry is cheap (every wrapper is empty/stateless).
+    Registry reg{};
+    std::apply([&](auto&&... bs) { (try_one(bs), ...); }, reg);
     return results;
 }
 

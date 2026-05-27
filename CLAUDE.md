@@ -166,6 +166,30 @@ The harness is built into both `libcppandroidtest.so` (currently no runtime trig
 
 Desktop emulators (BlueStacks/MEmu/LDPlayer/NoxPlayer) are not used. They translate ARM instructions for x86 hosts; perf numbers are meaningless and the NEON paths don't execute natively anyway.
 
+### Adding a new benchmark
+
+The project compiles as **C++20** (NDK 26 ships Clang 17, which supports the full C++20 surface — concepts, ranges, designated init, fold expressions, three-way comparison). Benchmarks are registered in `bench/registry.h` via a typelist tuple and dispatched with a fold expression:
+
+```cpp
+struct MyBench {
+    static constexpr const char* name = "my_bench";
+    using Config = MyConfig;
+    static Config make_config(const Args& a) { /* map CLI args -> Config */ }
+    static bool opt_in() { return false; }  // true = only runs under --filter
+    bench::Json run_per_cluster(const Config& cfg,
+                                const std::vector<bench::CpuCluster>& cl) const {
+        return ::my_run(cfg, cl);
+    }
+};
+
+// In registry.h:
+using Registry = std::tuple<..., MyBench>;
+```
+
+The `Benchmark<T>` concept + `static_assert(all_benchmarks(...))` at the bottom of `registry.h` make a malformed wrapper a compile error rather than a silent miscompile. `bench_main.cpp` does not change when you add a benchmark — `dispatch()` iterates the tuple automatically.
+
+C++26 (reflection P2996) isn't in Clang 17 yet, so the per-Config `make_config` mapping is still hand-written. When/if reflection lands, that boilerplate should collapse into a single generic visitor.
+
 ## Local development environment
 
 The author works on Windows. CLion's Android support is limited; **Android Studio is the supported IDE** for syncing and running this project. The `.idea/` directory and IDE-specific files are gitignored. Bash commands assume git-bash on Windows or WSL — paths use forward slashes inside scripts.
