@@ -16,7 +16,21 @@ set(BENCH_SOURCES
     bench/cpu/stream.cpp
     bench/cpu/latency.cpp
     bench/cpu/neon_fma.cpp
+    bench/cpu/dot_int8.cpp
     bench/cpu/sustained.cpp)
+
+# dot_int8.cpp uses ARMv8.2-A SDOT/UDOT intrinsics. We compile ONLY this TU
+# with +dotprod (rather than the whole library) because:
+#   - On Note10+ Exynos 9825, the mid cluster is Cortex-A75 which does NOT
+#     support DotProd. If autovectorization in other TUs emitted DOTPROD
+#     instructions, they would SIGILL when run on those cores.
+#   - The dot_int8 measurement functions runtime-gate on /proc/cpuinfo's
+#     'asimddp' feature, so they're never invoked on a non-DotProd core.
+# x86_64 / armv7 builds get no flag; the file falls back to its stub path.
+if(ANDROID_ABI STREQUAL "arm64-v8a")
+    set_source_files_properties(bench/cpu/dot_int8.cpp PROPERTIES
+        COMPILE_OPTIONS "-march=armv8.2-a+dotprod")
+endif()
 
 # ----------------------------------------------------------------------------
 # native_app_glue (NDK-shipped Activity bridge for NativeActivity apps)

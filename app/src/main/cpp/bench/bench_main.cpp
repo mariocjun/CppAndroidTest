@@ -16,6 +16,7 @@
 #include "cpu/stream.h"
 #include "cpu/latency.h"
 #include "cpu/neon_fma.h"
+#include "cpu/dot_int8.h"
 #include "cpu/sustained.h"
 
 #include <cstdio>
@@ -57,7 +58,8 @@ void print_help() {
 }
 
 const std::vector<std::string>& available_benchmarks() {
-    static const std::vector<std::string> v = {"stream", "latency", "neon_fma", "sustained"};
+    static const std::vector<std::string> v = {
+        "stream", "latency", "neon_fma", "dot_int8", "sustained"};
     return v;
 }
 
@@ -146,6 +148,12 @@ int main(int argc, char** argv) {
         if (args.iters > 0) cfg.iterations = args.iters;
         auto r = bench::cpu::run_neon_fma_per_cluster(cfg, clusters);
         results.emplace_back("neon_fma", std::move(r));
+    }
+    if (wanted(args.filter, "dot_int8")) {
+        bench::cpu::DotInt8Config cfg;
+        if (args.iters > 0) cfg.iterations = args.iters;
+        auto r = bench::cpu::run_dot_int8_per_cluster(cfg, clusters);
+        results.emplace_back("dot_int8", std::move(r));
     }
     if (wanted(args.filter, "sustained")) {
         bench::cpu::SustainedConfig cfg;
