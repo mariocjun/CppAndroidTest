@@ -1,14 +1,18 @@
-// cppbench: standalone benchmark harness, intended to be pushed via
-//   adb push <build>/cppbench /data/local/tmp/ && adb shell /data/local/tmp/cppbench --json
-// and produce JSON on stdout that scripts/compare.py can diff between devices.
+// cppbench: standalone CLI for benchmarks, sensor enumeration, camera
+// enumeration, and live streaming. Pushed via
+//   adb push <build>/cppbench /data/local/tmp/ && adb shell /data/local/tmp/cppbench ...
 //
-// CLI:
-//   --json           emit results as a single JSON object (no human prose)
-//   --filter=NAME    run only the named benchmark (substring match)
-//   --iters=N        override default iteration count
-//   --elems=N        override per-array element count for memory benchmarks
-//   --list           list available benchmarks and exit
-//   --help           print usage
+// One-shot benchmarks (default action):
+//   cppbench --json
+//   cppbench --filter=stream --json
+//
+// Live dynamic stream (NDJSON to stdout, runs until Ctrl-C):
+//   cppbench --stream
+//   adb shell /data/local/tmp/cppbench --stream | python scripts/dashboard.py
+//
+// Hardware enumeration (one-shot):
+//   cppbench --sensors    # all Android sensors with characteristics
+//   cppbench --cameras    # all cameras via NDK Camera2 (no capture, just metadata)
 #include "affinity.h"
 #include "json.h"
 #include "soc_info.h"
@@ -18,6 +22,9 @@
 #include "cpu/neon_fma.h"
 #include "cpu/dot_int8.h"
 #include "cpu/sustained.h"
+#include "sensors/sensors.h"
+#include "camera/camera.h"
+#include "stream/streamer.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -30,9 +37,14 @@ namespace {
 struct Args {
     bool json = false;
     bool list = false;
+    bool stream = false;
+    bool dump_sensors = false;
+    bool dump_cameras = false;
     std::string filter;
-    int iters = 0;       // 0 == use bench default
-    size_t elems = 0;    // 0 == use bench default
+    int iters = 0;
+    size_t elems = 0;
+    int interval_ms = 250;    // for --stream
+    int sensor_rate_us = 50000; // for --stream
 };
 
 bool arg_match(const char* a, const char* prefix, const char** value_out) {
@@ -46,15 +58,20 @@ bool arg_match(const char* a, const char* prefix, const char** value_out) {
 
 void print_help() {
     std::fprintf(stderr,
-        "cppbench — Note10+ Exynos / Snapdragon performance harness\n\n"
-        "Usage: cppbench [--json] [--filter=NAME] [--iters=N] [--elems=N]\n"
-        "                [--list] [--help]\n\n"
-        "  --json         emit a single JSON object on stdout (no human prose)\n"
-        "  --filter=NAME  run only benchmarks whose name contains NAME\n"
-        "  --iters=N      override default iteration count\n"
-        "  --elems=N      override per-array element count (memory benchmarks)\n"
-        "  --list         list available benchmarks and exit\n"
-        "  --help         this message\n");
+        "cppbench — Android perf + sensors + camera enumeration / live stream\n\n"
+        "Modes:\n"
+        "  cppbench [--json] [--filter=NAME] [--iters=N] [--elems=N]\n"
+        "      Run benchmarks (default: stream, latency, neon_fma, dot_int8).\n"
+        "  cppbench --stream [--interval-ms=N] [--sensor-rate-us=N]\n"
+        "      Continuous NDJSON output of sensors+thermal+freqs until SIGINT.\n"
+        "      Pipe through python scripts/dashboard.py for a live terminal view.\n"
+        "  cppbench --sensors\n"
+        "      Dump JSON enumeration of all Android sensors and exit.\n"
+        "  cppbench --cameras\n"
+        "      Dump JSON enumeration of all Camera2 cameras and exit.\n"
+        "  cppbench --list\n"
+        "      List available benchmark names.\n"
+        "  cppbench --help\n");
 }
 
 const std::vector<std::string>& available_benchmarks() {
@@ -109,12 +126,17 @@ int main(int argc, char** argv) {
         }
         if (std::strcmp(a, "--list") == 0) { args.list = true; continue; }
         if (std::strcmp(a, "--json") == 0) { args.json = true; continue; }
+        if (std::strcmp(a, "--stream") == 0) { args.stream = true; continue; }
+        if (std::strcmp(a, "--sensors") == 0) { args.dump_sensors = true; continue; }
+        if (std::strcmp(a, "--cameras") == 0) { args.dump_cameras = true; continue; }
         if (arg_match(a, "--filter", &v) && v) { args.filter = v; continue; }
         if (arg_match(a, "--iters",  &v) && v) { args.iters = std::atoi(v); continue; }
         if (arg_match(a, "--elems",  &v) && v) {
             args.elems = static_cast<size_t>(std::strtoull(v, nullptr, 10));
             continue;
         }
+        if (arg_match(a, "--interval-ms", &v) && v) { args.interval_ms = std::atoi(v); continue; }
+        if (arg_match(a, "--sensor-rate-us", &v) && v) { args.sensor_rate_us = std::atoi(v); continue; }
         std::fprintf(stderr, "cppbench: unknown argument: %s\n", a);
         print_help();
         return 2;
@@ -122,6 +144,26 @@ int main(int argc, char** argv) {
 
     if (args.list) {
         for (const auto& n : available_benchmarks()) std::printf("%s\n", n.c_str());
+        return 0;
+    }
+
+    if (args.dump_sensors) {
+        auto j = bench::sensors::enumerate_json();
+        std::printf("%s\n", j.str().c_str());
+        return 0;
+    }
+
+    if (args.dump_cameras) {
+        auto j = bench::camera::enumerate_json();
+        std::printf("%s\n", j.str().c_str());
+        return 0;
+    }
+
+    if (args.stream) {
+        bench::stream::StreamConfig cfg;
+        cfg.interval_ms = args.interval_ms;
+        cfg.sensor_rate_us = args.sensor_rate_us;
+        bench::stream::run(cfg);
         return 0;
     }
 
@@ -157,8 +199,6 @@ int main(int argc, char** argv) {
     }
     if (wanted(args.filter, "sustained")) {
         bench::cpu::SustainedConfig cfg;
-        // 'sustained' is opt-in only — heavy (30s+ default) and produces a
-        // multi-MB JSON blob; user must explicitly --filter=sustained.
         if (args.filter.find("sustained") != std::string::npos) {
             auto r = bench::cpu::run_sustained_on_big_core(cfg, clusters);
             results.emplace_back("sustained", std::move(r));
@@ -178,7 +218,6 @@ int main(int argc, char** argv) {
     if (args.json) {
         std::printf("%s\n", top.str().c_str());
     } else {
-        // Human-readable: print env + key numbers, then dump JSON.
         std::printf("SoC:    %s (%s / %s)\n",
                     bench::identify_soc(bench::collect_soc_info()).c_str(),
                     bench::collect_soc_info().model.c_str(),
