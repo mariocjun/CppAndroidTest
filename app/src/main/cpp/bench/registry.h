@@ -23,6 +23,7 @@
 #include "cpu/neon_fma.h"
 #include "cpu/dot_int8.h"
 #include "cpu/sustained.h"
+#include "cpu/perf_counters.h"
 
 #include <concepts>
 #include <cstddef>
@@ -132,11 +133,23 @@ struct SustainedBench {
     }
 };
 
+struct PerfCountersBench {
+    static constexpr const char* name = "perf_counters";
+    struct Config {};   // no tunables; the workload is fixed-size and the
+                        // counter set is hardcoded for portability.
+    static Config make_config(const Args&) { return {}; }
+    static bool opt_in() { return false; }
+    bench::Json run_per_cluster(const Config&,
+                                const std::vector<bench::CpuCluster>& cl) const {
+        return bench::cpu::run_perf_counters_per_cluster(cl);
+    }
+};
+
 // -- Registry tuple ---------------------------------------------------------
 // Adding a benchmark: write the wrapper above, then add its type here.
 // The Benchmark<T> concept blocks compilation if the wrapper is malformed.
 using Registry = std::tuple<StreamBench, LatencyBench, NeonFmaBench,
-                            DotInt8Bench, SustainedBench>;
+                            DotInt8Bench, PerfCountersBench, SustainedBench>;
 
 // Static check: every wrapper in Registry satisfies Benchmark<T>.
 template <typename... Bs>

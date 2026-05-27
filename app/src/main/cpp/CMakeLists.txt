@@ -109,6 +109,7 @@ set(BENCH_SOURCES
     bench/cpu/neon_fma.cpp
     bench/cpu/dot_int8.cpp
     bench/cpu/sustained.cpp
+    bench/cpu/perf_counters.cpp
     bench/sensors/sensors.cpp
     bench/camera/camera.cpp
     bench/stream/streamer.cpp)

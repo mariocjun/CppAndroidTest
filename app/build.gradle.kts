@@ -23,7 +23,10 @@ android {
         externalNativeBuild {
             cmake {
                 arguments += listOf("-DANDROID_STL=c++_shared")
-                cppFlags += "-std=c++23"
+                // Don't hard-code -std= here: NDK r26b ships Clang 17 which
+                // only knows '-std=c++2b' for C++23, while Clang 18+ uses
+                // '-std=c++23'. CMakeLists's CMAKE_CXX_STANDARD 23 lets CMake
+                // emit the right flag for whichever compiler the NDK ships.
             }
         }
         ndk {

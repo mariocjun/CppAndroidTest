@@ -156,8 +156,11 @@ std::vector<Reading> SensorSampler::drain(int timeout_ms) {
     std::vector<Reading> out;
     if (!valid()) return out;
 
-    int ident = ALooper_pollOnce(timeout_ms, nullptr, nullptr, nullptr);
-    (void)ident;
+    // ALooper_pollOnce blocks up to timeout_ms; the return ident value would
+    // tell us *why* it returned (timeout / our LOOPER_ID / error) but we drain
+    // the queue unconditionally on the next line, so the value is discardable.
+    // Calling without capture avoids -Wold-style-cast and -Wunused-variable.
+    ALooper_pollOnce(timeout_ms, nullptr, nullptr, nullptr);
 
     ASensorEvent buf[64];
     while (true) {
