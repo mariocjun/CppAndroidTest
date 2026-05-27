@@ -9,7 +9,13 @@ android {
 
     defaultConfig {
         applicationId = "com.example.cppandroidtest"
-        minSdk = 24
+        // minSdk 29 (Android 10) because:
+        //   - ASensor_getHandle was added in API 29 (NDK marks it
+        //     __INTRODUCED_IN(29); we use it in bench/sensors).
+        //   - ASensorManager_getInstanceForPackage requires API 26.
+        // All target devices (Note10+ Exynos/Snapdragon, S24 Ultra, any
+        // 2020+ flagship) are >= API 29, so this is no practical loss.
+        minSdk = 29
         targetSdk = 34
         versionCode = 1
         versionName = "1.0"

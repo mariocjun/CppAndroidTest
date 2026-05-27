@@ -14,7 +14,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
 ABI="${ABI:-arm64-v8a}"
-PLATFORM="${PLATFORM:-android-24}"
+PLATFORM="${PLATFORM:-android-29}"  # ASensor_getHandle / getInstanceForPackage
 BUILD_TYPE="${BUILD_TYPE:-Release}"
 BUILD_DIR="${BUILD_DIR:-build/bench-${ABI}}"
 

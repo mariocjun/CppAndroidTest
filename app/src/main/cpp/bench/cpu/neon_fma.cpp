@@ -53,7 +53,9 @@ namespace {
 constexpr int FMA_CHAINS = 8;
 
 volatile float g_sink_fma_f32 = 0.0f;
+#if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
 volatile float g_sink_fma_f16 = 0.0f;
+#endif
 
 double measure_fp32(int64_t outer_iters) {
     float32x4_t a0 = vdupq_n_f32(0.1f);
@@ -94,6 +96,10 @@ double measure_fp32(int64_t outer_iters) {
 }
 
 #if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
+// Only defined when the compiler has FP16 vector arith enabled. The call site
+// in run_neon_fma() is gated by the same macro, so omitting the stub on the
+// `#else` branch leaves the function genuinely undefined-and-unreferenced
+// rather than declared-and-unused (which clang warns about under -Wall).
 double measure_fp16(int64_t outer_iters) {
     float16x8_t a0 = vdupq_n_f16(static_cast<float16_t>(0.1f));
     float16x8_t a1 = vdupq_n_f16(static_cast<float16_t>(0.2f));
@@ -133,14 +139,11 @@ double measure_fp16(int64_t outer_iters) {
 
     return flops / secs / 1e9;
 }
-#else
-double measure_fp16(int64_t) { return -1.0; }
 #endif  // FPHP
 
 #else  // !BENCH_HAS_NEON: non-arm64 build (only happens for the x86_64 .so used
        // by the smoke emulator). Report sentinel so JSON consumers see "N/A".
 double measure_fp32(int64_t) { return -1.0; }
-double measure_fp16(int64_t) { return -1.0; }
 #endif
 
 bool fphp_in_features() {

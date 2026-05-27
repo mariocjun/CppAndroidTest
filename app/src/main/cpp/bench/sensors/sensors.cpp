@@ -8,7 +8,7 @@ namespace bench::sensors {
 
 namespace {
 
-constexpr int LOOPER_ID = 3;  // arbitrary identifier; we only have one queue here.
+constexpr int LOOPER_ID = 3;  // arbitrary; we only have one queue.
 
 const char* nullable(const char* p) { return p ? p : ""; }
 
@@ -21,8 +21,6 @@ SensorMeta meta_from(const ASensor* s) {
     m.string_type = nullable(ASensor_getStringType(s));
     m.resolution = ASensor_getResolution(s);
     m.min_delay_us = ASensor_getMinDelay(s);
-    m.max_range = 0.0f;  // no getter in the public NDK ASensor; left at 0
-    m.power_mA = 0.0f;   // no getter in the public NDK ASensor; left at 0
     m.reporting_mode = ASensor_getReportingMode(s);
     m.fifo_max_event_count = ASensor_getFifoMaxEventCount(s);
     m.fifo_reserved_event_count = ASensor_getFifoReservedEventCount(s);
@@ -30,6 +28,26 @@ SensorMeta meta_from(const ASensor* s) {
 }
 
 } // namespace
+
+// Impl lives in the bench::sensors namespace (not nested in SensorSampler)
+// so anonymous-namespace helpers in this TU can access its members. The .h
+// only forward-declares it via the std::unique_ptr<Impl> member.
+struct SensorSampler::Impl {
+    ASensorManager* mgr = nullptr;
+    ALooper* looper = nullptr;
+    ASensorEventQueue* queue = nullptr;
+    // Parallel arrays: handle <-> ASensor* (so we can resolve enable/disable
+    // requests without re-walking the framework's list every call).
+    std::vector<const ASensor*> sensors_by_pos;
+    std::vector<int> handles_by_pos;
+
+    const ASensor* find_by_handle(int handle) const {
+        for (size_t i = 0; i < handles_by_pos.size(); ++i) {
+            if (handles_by_pos[i] == handle) return sensors_by_pos[i];
+        }
+        return nullptr;
+    }
+};
 
 std::vector<SensorMeta> enumerate() {
     std::vector<SensorMeta> out;
@@ -70,68 +88,44 @@ Json enumerate_json() {
 
 // -- SensorSampler -----------------------------------------------------------
 
-struct SensorSampler::Impl {
-    ASensorManager* mgr = nullptr;
-    ALooper* looper = nullptr;
-    ASensorEventQueue* queue = nullptr;
-    // Cache: handle -> ASensor*. ASensorManager_getDefaultSensorEx isn't in
-    // the NDK; we use the enumeration to find a sensor by handle for enable().
-    std::vector<const ASensor*> sensors_by_handle;
-    std::vector<int> handles_known;  // parallel to sensors_by_handle
-};
-
-namespace {
-
-void populate_sensor_map(SensorSampler::Impl& impl) {
-    ASensorList list = nullptr;
-    int count = ASensorManager_getSensorList(impl.mgr, &list);
-    if (count <= 0 || !list) return;
-    impl.sensors_by_handle.reserve(static_cast<size_t>(count));
-    impl.handles_known.reserve(static_cast<size_t>(count));
-    for (int i = 0; i < count; ++i) {
-        if (!list[i]) continue;
-        impl.sensors_by_handle.push_back(list[i]);
-        impl.handles_known.push_back(ASensor_getHandle(list[i]));
-    }
-}
-
-const ASensor* find_by_handle(const SensorSampler::Impl& impl, int handle) {
-    for (size_t i = 0; i < impl.handles_known.size(); ++i) {
-        if (impl.handles_known[i] == handle) return impl.sensors_by_handle[i];
-    }
-    return nullptr;
-}
-
-} // namespace
-
 SensorSampler::SensorSampler(const char* package_name) : impl_(std::make_unique<Impl>()) {
+    // getInstanceForPackage is the preferred API since API 26; getInstance
+    // (deprecated since API 26) still works and is the only viable path when
+    // we have no package name (e.g. cppbench running from `adb shell`).
     if (package_name && *package_name) {
         impl_->mgr = ASensorManager_getInstanceForPackage(package_name);
     } else {
-        // Deprecated since API 26 but still functional; the only path that
-        // works from a non-app context (e.g. `adb shell`) without a package.
         impl_->mgr = ASensorManager_getInstance();
     }
     if (!impl_->mgr) return;
 
-    // ALooper_prepare returns the looper already associated with the thread,
-    // or creates a fresh one. ALLOW_NON_CALLBACKS lets us pollOnce without
-    // attaching ALooper_addFd callbacks for every event source.
+    // ALLOW_NON_CALLBACKS lets us pollOnce without attaching ALooper_addFd
+    // callbacks for every event source.
     impl_->looper = ALooper_prepare(ALOOPER_PREPARE_ALLOW_NON_CALLBACKS);
     if (!impl_->looper) return;
 
     impl_->queue = ASensorManager_createEventQueue(
-        impl_->mgr, impl_->looper, LOOPER_ID, /*ALooper_callbackFunc*/ nullptr, /*data*/ nullptr);
+        impl_->mgr, impl_->looper, LOOPER_ID, /*callback*/ nullptr, /*data*/ nullptr);
     if (!impl_->queue) return;
 
-    populate_sensor_map(*impl_);
+    // Build the handle <-> ASensor* map once at construction.
+    ASensorList list = nullptr;
+    int count = ASensorManager_getSensorList(impl_->mgr, &list);
+    if (count > 0 && list) {
+        impl_->sensors_by_pos.reserve(static_cast<size_t>(count));
+        impl_->handles_by_pos.reserve(static_cast<size_t>(count));
+        for (int i = 0; i < count; ++i) {
+            if (!list[i]) continue;
+            impl_->sensors_by_pos.push_back(list[i]);
+            impl_->handles_by_pos.push_back(ASensor_getHandle(list[i]));
+        }
+    }
 }
 
 SensorSampler::~SensorSampler() {
     if (!impl_) return;
     if (impl_->queue && impl_->mgr) {
-        for (int handle : impl_->handles_known) {
-            const ASensor* s = find_by_handle(*impl_, handle);
+        for (const ASensor* s : impl_->sensors_by_pos) {
             if (s) ASensorEventQueue_disableSensor(impl_->queue, s);
         }
         ASensorManager_destroyEventQueue(impl_->mgr, impl_->queue);
@@ -144,7 +138,7 @@ bool SensorSampler::valid() const {
 
 bool SensorSampler::enable(int handle, int32_t period_us) {
     if (!valid()) return false;
-    const ASensor* s = find_by_handle(*impl_, handle);
+    const ASensor* s = impl_->find_by_handle(handle);
     if (!s) return false;
     if (ASensorEventQueue_enableSensor(impl_->queue, s) != 0) return false;
     if (ASensorEventQueue_setEventRate(impl_->queue, s, period_us) != 0) return false;
@@ -153,7 +147,7 @@ bool SensorSampler::enable(int handle, int32_t period_us) {
 
 bool SensorSampler::disable(int handle) {
     if (!valid()) return false;
-    const ASensor* s = find_by_handle(*impl_, handle);
+    const ASensor* s = impl_->find_by_handle(handle);
     if (!s) return false;
     return ASensorEventQueue_disableSensor(impl_->queue, s) == 0;
 }
@@ -162,11 +156,8 @@ std::vector<Reading> SensorSampler::drain(int timeout_ms) {
     std::vector<Reading> out;
     if (!valid()) return out;
 
-    // ALooper_pollOnce blocks until either (a) timeout, (b) an event source
-    // fires (our queue is a registered source), or (c) a wake. We then drain
-    // the queue fully.
     int ident = ALooper_pollOnce(timeout_ms, nullptr, nullptr, nullptr);
-    (void)ident;  // could be ALOOPER_POLL_TIMEOUT/ERROR/CALLBACK or our LOOPER_ID
+    (void)ident;
 
     ASensorEvent buf[64];
     while (true) {
@@ -177,8 +168,6 @@ std::vector<Reading> SensorSampler::drain(int timeout_ms) {
             r.handle = buf[i].sensor;
             r.type = buf[i].type;
             r.timestamp_ns = buf[i].timestamp;
-            // Copy up to 16 floats from the union — covers vectors (3),
-            // rotation vectors (5), and any per-type scalars.
             r.value_count = 16;
             std::memcpy(r.values, buf[i].data, sizeof(r.values));
             out.push_back(r);

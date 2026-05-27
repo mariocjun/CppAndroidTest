@@ -111,9 +111,44 @@ Prints per-cluster STREAM bandwidth with ratios. Extend with more metrics as ben
 |---|---|---|---|
 | `stream` | DRAM bandwidth GB/s (copy/scale/add/triad) | McCalpin STREAM on 16 MB float arrays, best-of-N | `bench/cpu/stream.cpp` |
 | `latency` | L1d/L2/SLC/DRAM latency in ns/load | Pointer-chase, random Hamiltonian cycle, 4 KB → 64 MB sweep | `bench/cpu/latency.cpp` |
-| `neon_fma` | Single-core peak GFLOPS | `vfmaq_f32`/`vfmaq_f16` × 8 chains, GFLOPS reported per core | `bench/cpu/neon_fma.cpp` |
+| `neon_fma` | Single-core peak GFLOPS (FP32+FP16) | `vfmaq_f32`/`vfmaq_f16` × 8 chains, gated on `fphp`/`asimdhp` | `bench/cpu/neon_fma.cpp` |
+| `dot_int8` | ARMv8.2-A SDOT/UDOT GOps/s | `vdotq_s32`/`vdotq_u32` × 8 chains, gated on `asimddp`. The TU is compiled with per-file `-march=armv8.2-a+dotprod` so other TUs don't acquire DOTPROD via autovectorization (would SIGILL on Exynos 9825 A75 cores). | `bench/cpu/dot_int8.cpp` |
+| `sustained` | GFLOPS vs time + thermal + freq throttling curve | NEON FMA pinned to big core for `duration_sec`, sampling temps + freqs every `sample_interval_ms` (auto-rescaled chunk size to keep cadence honest as kernel throttles). Opt-in via `--filter=sustained` (heavy). | `bench/cpu/sustained.cpp` |
 
 CLI: `cppbench [--json] [--filter=NAME] [--iters=N] [--elems=N] [--list]`. Each benchmark is run per cluster (LITTLE / mid / big) using `sched_setaffinity` to pin to that cluster's CPUs. Cluster topology is discovered at runtime from `/sys/devices/system/cpu/cpu*/cpufreq/cpuinfo_max_freq` — no SoC-specific hardcoding.
+
+### Live dynamic stream (sensors + thermal + freqs)
+
+`cppbench --stream` emits NDJSON to stdout (one JSON object per line) continuously until SIGINT:
+
+1. **header line** — once at startup. Contains `env` (SoC, model, Android version, num CPUs), `thermal_zones` (every `/sys/class/thermal/thermal_zone*` discovered), `sensors_meta` (full enumeration via `ASensorManager_getSensorList`), and `cameras` (full enumeration via `ACameraManager_getCameraIdList` + characteristics — no capture).
+2. **frame lines** — emitted every `--interval-ms` (default 250 ms). Each frame has `temps_mc` (array of milicelsius per zone), `freqs_khz` (array of current cpufreq per CPU), and `sensors` (array of latest readings, one per active sensor).
+3. **footer line** — once when SIGINT received.
+
+Sensors enabled automatically: every CONTINUOUS and ON_CHANGE sensor at `--sensor-rate-us` (default 50 000 µs = 20 Hz). ONE_SHOT and SPECIAL sensors are skipped by default. The C++ side calls `fflush(stdout)` after every line so adb-shell pipes update in real time.
+
+#### Live terminal dashboard
+
+`scripts/dashboard.py` reads the NDJSON from stdin and re-renders a terminal dashboard with ANSI escape codes (CPU freqs in GHz with green-for-active colouring, thermal zones with traffic-light colouring keyed on °C, every active sensor with named axes — `x/y/z` for vectors, `v` for scalars, etc.). Requires Python 3.10+.
+
+`scripts/live-dashboard.sh` is the one-shot end-to-end: push cppbench, run it on-device in stream mode, pipe through dashboard.py. Strips CR injected by `adb shell` on some platforms so the JSON parser doesn't reject lines.
+
+```bash
+bash scripts/live-dashboard.sh                    # auto-detect single device
+bash scripts/live-dashboard.sh RF8M12345ABC       # specific serial
+```
+
+### One-shot enumeration
+
+```bash
+cppbench --sensors    # JSON dump of all sensors (handle, type, name, vendor,
+                      # string_type, resolution, min_delay_us, reporting_mode,
+                      # FIFO depth — everything ASensor_* exposes)
+cppbench --cameras    # JSON dump of every Camera2 camera (facing, hw_level,
+                      # capabilities, focal lengths, sensor physical size,
+                      # pixel array geometry, ISO range, exposure range,
+                      # every output stream config — format/resolution/input)
+```
 
 ### Methodology
 
