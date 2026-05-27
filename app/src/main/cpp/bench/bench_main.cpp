@@ -16,6 +16,7 @@
 #include "cpu/stream.h"
 #include "cpu/latency.h"
 #include "cpu/neon_fma.h"
+#include "cpu/sustained.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -56,7 +57,7 @@ void print_help() {
 }
 
 const std::vector<std::string>& available_benchmarks() {
-    static const std::vector<std::string> v = {"stream", "latency", "neon_fma"};
+    static const std::vector<std::string> v = {"stream", "latency", "neon_fma", "sustained"};
     return v;
 }
 
@@ -145,6 +146,15 @@ int main(int argc, char** argv) {
         if (args.iters > 0) cfg.iterations = args.iters;
         auto r = bench::cpu::run_neon_fma_per_cluster(cfg, clusters);
         results.emplace_back("neon_fma", std::move(r));
+    }
+    if (wanted(args.filter, "sustained")) {
+        bench::cpu::SustainedConfig cfg;
+        // 'sustained' is opt-in only — heavy (30s+ default) and produces a
+        // multi-MB JSON blob; user must explicitly --filter=sustained.
+        if (args.filter.find("sustained") != std::string::npos) {
+            auto r = bench::cpu::run_sustained_on_big_core(cfg, clusters);
+            results.emplace_back("sustained", std::move(r));
+        }
     }
 
     bench::Json top;
