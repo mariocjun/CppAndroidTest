@@ -1,0 +1,122 @@
+name: Smoke test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-34 build-tools;34.0.0 ndk;26.1.10909125 cmake;3.22.1'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Generate Gradle wrapper
+        run: gradle wrapper --gradle-version 8.7 --distribution-type bin
+
+      - name: Build debug APK
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: AVD cache
+        uses: actions/cache@v4
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-30-x86_64-v1
+
+      - name: Create AVD snapshot
+        if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          arch: x86_64
+          target: default
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot-save -noaudio -no-boot-anim
+          disable-animations: true
+          script: echo "AVD created"
+
+      - name: Run smoke test
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          arch: x86_64
+          target: default
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot-save -noaudio -no-boot-anim
+          disable-animations: true
+          script: |
+            set -e
+            adb install -r app/build/outputs/apk/debug/app-debug.apk
+            adb logcat -c
+            adb shell am start -W -n com.example.cppandroidtest/android.app.NativeActivity
+            sleep 8
+
+            PID=$(adb shell pidof com.example.cppandroidtest || true)
+            adb logcat -d > logcat-full.txt
+            adb logcat -d -s CppAndroidTest > native.log || true
+
+            echo "::group::Native log (CppAndroidTest tag)"
+            cat native.log
+            echo "::endgroup::"
+
+            if [ -z "$PID" ]; then
+              echo "::error::Process com.example.cppandroidtest is not running after 8s"
+              echo "::group::FATAL/DEBUG entries from logcat"
+              grep -E "FATAL|DEBUG|tombstone|signal|backtrace" logcat-full.txt | head -100 || true
+              echo "::endgroup::"
+              exit 1
+            fi
+
+            echo "OK: process alive, PID=$PID"
+
+            # Optional: verify the C++ side actually logged its hello message
+            if ! grep -q "Hello from C++ Native Activity" native.log; then
+              echo "::error::android_main never reached — libcppandroidtest.so loaded but entry not called?"
+              exit 1
+            fi
+            echo "OK: android_main reached"
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-logs-${{ github.run_id }}
+          path: |
+            logcat-full.txt
+            native.log
+          if-no-files-found: ignore
