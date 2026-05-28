@@ -16,7 +16,18 @@ cd "$REPO_ROOT"
 ABI="${ABI:-arm64-v8a}"
 PLATFORM="${PLATFORM:-android-29}"  # ASensor_getHandle / getInstanceForPackage
 BUILD_TYPE="${BUILD_TYPE:-Release}"
-BUILD_DIR="${BUILD_DIR:-build/bench-${ABI}}"
+# Output dir uses the short ABI form (arm64 instead of arm64-v8a) because
+# this script's primary use case is the standalone arm64 bench and all the
+# downstream consumers (release.yml, run-bench.sh, live-dashboard.sh, smoke
+# CI compile-check) reference build/bench-arm64/cppbench. Override via
+# BUILD_DIR=... if you need per-ABI output dirs.
+case "$ABI" in
+    arm64-v8a)   DEFAULT_DIR="build/bench-arm64" ;;
+    armeabi-v7a) DEFAULT_DIR="build/bench-armv7" ;;
+    x86_64)      DEFAULT_DIR="build/bench-x86_64" ;;
+    *)           DEFAULT_DIR="build/bench-${ABI}" ;;
+esac
+BUILD_DIR="${BUILD_DIR:-$DEFAULT_DIR}"
 
 # Locate NDK
 if [ -z "${ANDROID_NDK:-}" ]; then
