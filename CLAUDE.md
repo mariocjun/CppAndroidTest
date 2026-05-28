@@ -214,6 +214,46 @@ The `Benchmark<T>` concept + `static_assert(all_benchmarks(...))` at the bottom 
 
 C++26 (reflection P2996) isn't in Clang 17 yet, so the per-Config `make_config` mapping is still hand-written. When/if reflection lands, that boilerplate should collapse into a single generic visitor.
 
+## Physical device test rig (the "official tester")
+
+The authoritative perf numbers come from a **rooted SM-N975F (Exynos 9825)** — ADB serial `REDACTED_SERIAL`, also reachable over Tailscale at `REDACTED_HOST:5555`. It's rooted via Magisk in the recovery slot (lineage: the `redacted-project` CSI project's `tools/csi-patch/flash_f2.sh`). Root buys two things the GitHub-hosted x86_64 emulator and the unrooted S24 Ultra can't give:
+- **PMU counters** — `perf_event_open` succeeds via CAP_PERFMON despite `kernel.perf_event_paranoid=3`.
+- **cpufreq governor pinning** — `performance` on all clusters → stable numbers (CV <1%) instead of schedutil ramp-up noise.
+
+### `scripts/device-harness.sh`
+
+Generalises `flash_f2.sh`'s device-session safety (codename gate, `asroot`, recovery-slot root) into a reusable rig. **Never touches WiFi firmware/bootloader** — OS/app level only (reboot-recovery, adb install, su exec, governor); all reversible.
+
+```bash
+bash scripts/device-harness.sh probe REDACTED_SERIAL          # read-only: root, clusters, governors
+bash scripts/device-harness.sh full REDACTED_SERIAL [filter]  # root -> pin-perf -> bench -> unpin
+bash scripts/device-harness.sh full-stats REDACTED_SERIAL "" 7 # 7 runs -> median/CV aggregate
+bash scripts/device-harness.sh install REDACTED_SERIAL <apk>
+```
+
+`scripts/aggregate-runs.py` reports median/min/max/CV% per (benchmark, cluster, metric) across N runs; CV>15% is flagged noisy. **Single-run numbers are not trustworthy** on mobile (DVFS + scheduler) — always `full-stats` with ≥5 runs for any claim.
+
+### Self-hosted CI — `.github/workflows/device-test.yml`
+
+A self-hosted runner (`redacted-runner`, labels `self-hosted,n975f`) on the dev PC runs the suite on the physical N975F. Triggers are **owner-only** (`workflow_dispatch` + `release:published`, never `pull_request`) because the repo is public — a self-hosted runner on a public repo must never be reachable by fork PRs. Plus a `github.repository_owner == 'mariocjun'` guard.
+
+Runner location: `C:\Users\MarioCordeiroJunior\actions-runner-cppandroid`. Persistence: a current-user **logon Task Scheduler task** (`GitHubRunner-cppandroidtest-N975F`, no admin) auto-starts it. For a proper Windows service (survives without an interactive logon), run as **admin** once: `cd <runner>; .\svc.cmd install; .\svc.cmd start`.
+
+```bash
+gh workflow run device-test.yml -f filter="" -f runs=7   # trigger a device bench
+```
+
+### Exynos 9825 baseline (performance governor, root, median of 7)
+
+| metric | A55 @1.95G | A75 @2.40G | M4 @2.73G |
+|---|---|---|---|
+| NEON FP32 FMA (GFLOPS) | 13.8 | 19.1 | 45.0 |
+| SDOT int8 (GOps) | 61.9 | **38.2** | 173.3 |
+| STREAM triad (GB/s) | 6.5 | 17.7 | 23.0 |
+| IPC (PMU, FMA loop) | 1.25 | 1.66 | 1.67 |
+
+**Finding:** the A75 has **half-rate DotProd** (0.5 SDOT/cycle vs A55's 1.0 and M4's 2.0) — a real, reproducible Cortex-A75 trait (early ARMv8.2, DotProd de-prioritised), not measurement noise. The neon_fma A75 dip seen in single runs WAS noise (schedutil); performance governor fixes it.
+
 ## Local development environment
 
 The author works on Windows. CLion's Android support is limited; **Android Studio is the supported IDE** for syncing and running this project. The `.idea/` directory and IDE-specific files are gitignored. Bash commands assume git-bash on Windows or WSL — paths use forward slashes inside scripts.
