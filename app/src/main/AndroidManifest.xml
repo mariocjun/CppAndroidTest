@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- INTERNET: needed by the 'Upload results' button to POST JSON to
+         paste.rs and similar public paste services for remote analysis. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <uses-feature android:glEsVersion="0x00020000" android:required="false" />
 
     <application
