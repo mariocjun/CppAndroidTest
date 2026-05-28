@@ -49,16 +49,24 @@ jobs:
         shell: bash
         run: bash scripts/device-harness.sh probe REDACTED_SERIAL
 
-      - name: Build/resolve cppbench for the device
+      - name: Provision cppbench ELF (latest release asset)
         shell: bash
         env:
-          # On the self-hosted runner, the NDK is at the dev PC's SDK path.
-          # If absent, device-harness.sh falls back to the latest release asset.
-          ANDROID_NDK: ${{ env.ANDROID_NDK }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          # Prefer the freshly-tagged release asset matching this run; the
-          # harness auto-downloads the latest cppbench-*-arm64-v8a if needed.
-          bash scripts/device-harness.sh root REDACTED_SERIAL
+          mkdir -p build/bench-arm64
+          # github.token has read access to this repo's releases. Download the
+          # latest cppbench arm64 asset to the harness's default path so the
+          # harness doesn't have to resolve/download it itself.
+          gh release download --repo "${{ github.repository }}" \
+            --pattern 'cppbench-*-arm64-v8a' \
+            --output build/bench-arm64/cppbench --clobber
+          ls -la build/bench-arm64/cppbench
+          file build/bench-arm64/cppbench || true
+
+      - name: Activate root on the device
+        shell: bash
+        run: bash scripts/device-harness.sh root REDACTED_SERIAL
 
       - name: Run benchmark suite (root, performance governor, N runs)
         shell: bash

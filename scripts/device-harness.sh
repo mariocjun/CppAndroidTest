@@ -131,7 +131,9 @@ resolve_cppbench() {
             --jq '.assets[] | select(.name|startswith("cppbench-")) | .url' 2>/dev/null | head -1)
     [ -n "$url" ] || { echo "FAIL: could not resolve a cppbench release asset" >&2; exit 1; }
     gh release download --repo mariocjun/CppAndroidTest --pattern 'cppbench-*-arm64-v8a' \
-        --output "$dl" --clobber >&2
+        --output "$dl" --clobber >&2 \
+        || { echo "FAIL: gh release download failed (auth? set GH_TOKEN)" >&2; exit 1; }
+    [ -f "$dl" ] || { echo "FAIL: download did not produce $dl" >&2; exit 1; }
     echo "$dl"
 }
 
