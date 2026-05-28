@@ -1,7 +1,10 @@
 *.iml
 .gradle
 .idea/
-.claude/
+# Track .claude/skills/ (agent capabilities ship with the template) but ignore
+# local/machine state.
+.claude/settings.local.json
+.claude/settings.json
 local.properties
 .DS_Store
 build/
