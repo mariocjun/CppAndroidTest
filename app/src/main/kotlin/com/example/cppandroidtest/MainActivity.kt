@@ -3,23 +3,26 @@
 // handles crash-dump propagation.
 //
 // UI layout:
-//   filter row:  [ filter text input ] [ Run ]
-//   info row:    [ HW Capabilities ] [ Sensors ] [ Cameras ]
-//   action row:  [ Upload last result ]
-//   output:      scrollable monospace TextView (selectable)
+//   url history:  always-visible scrollable history of upload URLs
+//   filter row:   [ filter text input ] [ Run ]
+//   info row:     [ HW caps ] [ Sensors ] [ Cameras ]
+//   action row:   [ Upload last result ]
+//   output:       scrollable monospace TextView (selectable)
 //
-// 'Run' uses the filter input — empty = default benchmark suite (everything
-// except opt-in: i8mm, sve2, sustained). Type 'stream' / 'latency' /
-// 'neon_fma' / 'dot_int8' / 'i8mm' / 'sve2' / 'sustained' to run just one.
-// 'sustained,perf_counters' for a comma list.
-//
-// HW Capabilities shows kernel-permitted ARMv8/ARMv9 extensions
-// (getauxval(AT_HWCAP) view). Useful BEFORE running an extension bench to
-// know whether it'll SIGILL on this kernel.
+// 'Upload' POSTs the latest output to paste.rs. The returned URL is:
+//   1. Copied to the system clipboard automatically.
+//   2. Prepended to a persistent 'Recent uploads' header that survives
+//      subsequent Run taps (so you don't lose URLs when starting a new
+//      benchmark).
+//   3. Appended to a log file in filesDir/upload-log.txt.
 
 package com.example.cppandroidtest
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.os.Bundle
+import android.text.method.LinkMovementMethod
 import android.text.method.ScrollingMovementMethod
 import android.view.Gravity
 import android.view.View
@@ -53,6 +56,7 @@ class MainActivity : AppCompatActivity() {
         init { System.loadLibrary("cppandroidtest") }
         private const val PADDING_DP = 12
         private const val PASTE_ENDPOINT = "https://paste.rs/"
+        private const val MAX_URL_HISTORY = 8
     }
 
     private external fun nativeSetCrashDir(internalDir: String)
@@ -61,6 +65,7 @@ class MainActivity : AppCompatActivity() {
     private external fun nativeEnumerateCameras(): String
     private external fun nativeHwcaps(): String
 
+    private lateinit var urlHistoryView: TextView
     private lateinit var output: TextView
     private lateinit var filterField: EditText
     private lateinit var runBtn: Button
@@ -69,6 +74,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var camerasBtn: Button
     private lateinit var uploadBtn: Button
 
+    private val urlHistory: ArrayDeque<String> = ArrayDeque()
     private var lastJson: String = ""
     private var lastKind: String = ""
 
@@ -76,6 +82,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         nativeSetCrashDir(filesDir.absolutePath)
         setContentView(buildUi())
+        loadUrlHistory()
         showInitialBanner()
         checkForPreviousCrash()
     }
@@ -88,6 +95,18 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             setPadding(padPx, padPx, padPx, padPx)
         }
+
+        // Row 0: persistent URL history (sticky at top, survives Run taps)
+        urlHistoryView = TextView(this).apply {
+            textSize = 11f
+            typeface = android.graphics.Typeface.MONOSPACE
+            setTextIsSelectable(true)
+            movementMethod = LinkMovementMethod.getInstance()
+            autoLinkMask = android.text.util.Linkify.WEB_URLS
+            text = "(no uploads yet)"
+            setPadding(0, 0, 0, padPx / 2)
+        }
+        root.addView(urlHistoryView)
 
         // Row 1: filter input + Run button
         val filterRow = LinearLayout(this).apply {
@@ -154,16 +173,18 @@ class MainActivity : AppCompatActivity() {
         val externalDir = getExternalFilesDir(null)?.absolutePath ?: "(none)"
         output.text = buildString {
             append("Quick start:\n")
-            append("  1. Tap 'HW caps' to see which CPU extensions the kernel permits.\n")
-            append("  2. Tap 'Run' (empty filter) for the default suite: STREAM /\n")
-            append("     pointer-chase latency / NEON FP32+FP16 FMA / SDOT int8 / PMU\n")
-            append("     counters.\n")
-            append("  3. To run a single bench, type its name in the filter box and tap\n")
-            append("     'Run'. Available: stream, latency, neon_fma, dot_int8,\n")
-            append("     i8mm (opt-in), sve2 (opt-in), perf_counters, sustained (opt-in).\n")
+            append("  1. Tap 'HW caps' first — shows kernel-permitted ARM extensions.\n")
+            append("  2. Tap 'Run' (empty filter) for the default suite (~15s).\n")
+            append("  3. To isolate one bench, type its name and tap Run.\n")
+            append("     Names: stream, latency, neon_fma, dot_int8, i8mm (opt-in),\n")
+            append("     sve2 (opt-in), perf_counters, sustained (opt-in).\n")
             append("\n")
-            append("Each run also writes <kind>-YYYYMMDD-HHMMSS.json to:\n")
-            append("  ").append(externalDir).append("\n")
+            append("After a job, tap 'Upload last result' to share via paste.rs.\n")
+            append("URLs are auto-copied to clipboard AND kept in the history bar\n")
+            append("above so they survive subsequent Run taps.\n")
+            append("\n")
+            append("Local copies of every job also save to:\n")
+            append("  ").append(externalDir)
         }
     }
 
@@ -259,9 +280,10 @@ class MainActivity : AppCompatActivity() {
                 .getOrElse { "ERROR: ${it.javaClass.simpleName}: ${it.message}" }
             withContext(Dispatchers.Main) {
                 if (url.startsWith("http")) {
+                    recordUpload(labelKind, url)
                     output.append("URL: $url\nKind: $labelKind\n" +
-                            "Share this URL — it stays up for a few days.\n")
-                    toast("Uploaded: $url")
+                            "(copied to clipboard; also in history bar above)\n")
+                    toast("Uploaded — URL copied to clipboard")
                 } else {
                     output.append("$url\n")
                     toast("Upload failed.")
@@ -279,7 +301,7 @@ class MainActivity : AppCompatActivity() {
             connectTimeout = 15_000
             readTimeout = 15_000
             setRequestProperty("Content-Type", "text/plain; charset=utf-8")
-            setRequestProperty("User-Agent", "cppandroidtest/0.3.2")
+            setRequestProperty("User-Agent", "cppandroidtest/0.3.3")
         }
         try {
             conn.outputStream.use { os: OutputStream -> os.write(body.toByteArray(Charsets.UTF_8)) }
@@ -290,6 +312,60 @@ class MainActivity : AppCompatActivity() {
         } finally {
             conn.disconnect()
         }
+    }
+
+    // -- URL history persistence --------------------------------------------
+
+    private fun recordUpload(kind: String, url: String) {
+        val ts = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
+        val entry = "[$ts] $kind  $url"
+        urlHistory.addFirst(entry)
+        while (urlHistory.size > MAX_URL_HISTORY) urlHistory.removeLast()
+        renderUrlHistory()
+        // Auto-copy to system clipboard so the URL survives anything that
+        // happens to the in-app UI.
+        runCatching {
+            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            cm.setPrimaryClip(ClipData.newPlainText("paste.rs upload", url))
+        }
+        // Append to persistent log so even crashing/uninstalling leaves a trace.
+        runCatching {
+            File(filesDir, "upload-log.txt")
+                .appendText("${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())}  $kind  $url\n")
+        }
+    }
+
+    private fun renderUrlHistory() {
+        if (urlHistory.isEmpty()) {
+            urlHistoryView.text = "(no uploads yet)"
+            return
+        }
+        urlHistoryView.text = "Recent uploads (latest first):\n" +
+                urlHistory.joinToString("\n") { "  $it" }
+    }
+
+    private fun loadUrlHistory() {
+        val f = File(filesDir, "upload-log.txt")
+        if (!f.exists()) {
+            renderUrlHistory()
+            return
+        }
+        runCatching {
+            // Pull the last MAX_URL_HISTORY URL lines from the log.
+            val lines = f.readLines().asReversed().take(MAX_URL_HISTORY)
+            urlHistory.clear()
+            for (line in lines) {
+                // Format on disk: "YYYY-MM-DD HH:MM:SS  kind  url"
+                // Render as in-memory format (HH:MM:SS  kind  url).
+                val parts = line.split("  ", limit = 3)
+                val short = if (parts.size == 3) {
+                    val timeOnly = parts[0].substringAfter(' ')
+                    "[$timeOnly] ${parts[1]}  ${parts[2]}"
+                } else line
+                urlHistory.addLast(short)
+            }
+        }
+        renderUrlHistory()
     }
 
     // -- Crash dump from previous run ---------------------------------------

@@ -18,8 +18,8 @@ android {
         // 2020+ flagship) are >= API 29, so this is no practical loss.
         minSdk = 29
         targetSdk = 34
-        versionCode = 3
-        versionName = "0.3.2"
+        versionCode = 4
+        versionName = "0.3.3"
 
         externalNativeBuild {
             cmake {
