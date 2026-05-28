@@ -118,8 +118,11 @@ class MainActivity : AppCompatActivity() {
             textSize = 12f
             layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
             isSingleLine = true
+            // Stable test locator — UI automation finds this by content-desc,
+            // never by pixel coordinates, so it survives layout/resolution changes.
+            contentDescription = "field_filter"
         }
-        runBtn = btn("Run") { triggerBenchmarks(filterField.text.toString().trim()) }
+        runBtn = btn("Run", "btn_run") { triggerBenchmarks(filterField.text.toString().trim()) }
         runBtn.layoutParams = LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT)
         filterRow.addView(filterField)
         filterRow.addView(runBtn)
@@ -130,9 +133,9 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
         }
-        hwBtn      = btn("HW caps")  { triggerJob("hwcaps") }
-        sensorsBtn = btn("Sensors")  { triggerJob("sensors") }
-        camerasBtn = btn("Cameras")  { triggerJob("cameras") }
+        hwBtn      = btn("HW caps", "btn_hwcaps")   { triggerJob("hwcaps") }
+        sensorsBtn = btn("Sensors", "btn_sensors")  { triggerJob("sensors") }
+        camerasBtn = btn("Cameras", "btn_cameras")  { triggerJob("cameras") }
         for (b in listOf(hwBtn, sensorsBtn, camerasBtn)) {
             b.layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
             infoRow.addView(b)
@@ -140,7 +143,7 @@ class MainActivity : AppCompatActivity() {
         root.addView(infoRow)
 
         // Row 3: Upload button (full-width)
-        uploadBtn = btn("Upload last result") { uploadLast() }.apply {
+        uploadBtn = btn("Upload last result", "btn_upload") { uploadLast() }.apply {
             layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
             isEnabled = false
         }
@@ -162,9 +165,13 @@ class MainActivity : AppCompatActivity() {
         return root
     }
 
-    private fun btn(label: String, onTap: () -> Unit): Button =
+    // testId becomes the View's contentDescription — a stable locator that
+    // UI automation (scripts/ui_tap.py) matches against, so taps don't depend
+    // on pixel coordinates or on the visible label text.
+    private fun btn(label: String, testId: String, onTap: () -> Unit): Button =
         Button(this).apply {
             text = label
+            contentDescription = testId
             gravity = Gravity.CENTER
             setOnClickListener { onTap() }
         }

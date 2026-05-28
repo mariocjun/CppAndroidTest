@@ -76,6 +76,25 @@ jobs:
           RUNS="${RUNS:-7}"
           bash scripts/device-harness.sh full-stats REDACTED_SERIAL "$FILTER" "$RUNS"
 
+      - name: Provision APK (latest release)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p build
+          gh release download --repo "${{ github.repository }}" --pattern '*.apk' \
+            --output build/CppAndroidTest-release.apk --clobber
+          ls -la build/CppAndroidTest-release.apk
+
+      - name: UI smoke test (content-desc locators, not coordinates)
+        shell: bash
+        run: |
+          # Drives the real app by stable content-description test IDs
+          # (btn_hwcaps / btn_run) — resolution- and layout-independent. Fails
+          # the build if a locator can't be resolved (i.e. a button id changed
+          # or vanished) or a tapped job produces no output file.
+          bash scripts/device-harness.sh ui-test build/CppAndroidTest-release.apk
+
       - name: Upload result artifacts
         if: always()
         uses: actions/upload-artifact@v4

@@ -203,6 +203,60 @@ bench_stats() {
         "results/$(basename "$glob")-run"*.json )
 }
 
+# UI smoke test driven by stable content-desc locators (scripts/ui_tap.py),
+# NOT pixel coordinates — survives layout/resolution changes. Installs the
+# APK, taps HW caps + Run, verifies each produced its result file in the
+# app's external-files dir.
+resolve_apk() {
+    local a="${1:-}"
+    if [ -n "$a" ] && [ -f "$a" ]; then echo "$a"; return; fi
+    local dl="$REPO/build/CppAndroidTest-release.apk"
+    if [ ! -f "$dl" ]; then
+        mkdir -p "$(dirname "$dl")"
+        gh release download --repo mariocjun/CppAndroidTest --pattern '*.apk' \
+            --output "$dl" --clobber >&2 \
+            || { echo "FAIL: could not download release APK" >&2; exit 1; }
+    fi
+    echo "$dl"
+}
+
+ui_test() {
+    local apk; apk=$(resolve_apk "${1:-}")
+    local PKG=com.example.cppandroidtest
+    local FILES=/storage/emulated/0/Android/data/$PKG/files
+    local PY="${PYTHON:-python}"
+    echo "ui-test: install $apk"
+    adbx install -r "$(cygpath -w "$apk" 2>/dev/null || echo "$apk")" >/dev/null
+    ensure_root  # so we can read/clear the app's external files dir
+    asroot "rm -f $FILES/hwcaps-*.json $FILES/benchmarks-*.json" 2>/dev/null || true
+    echo "ui-test: launch MainActivity"
+    adbx shell am start -W -n "$PKG/.MainActivity" >/dev/null
+    sleep 2
+
+    echo "ui-test: tap btn_hwcaps"
+    ui_tap btn_hwcaps || { echo "  FAIL: locator btn_hwcaps not found"; return 1; }
+    sleep 2
+    asroot "ls $FILES/hwcaps-*.json" >/dev/null 2>&1 \
+        && echo "  PASS: hwcaps file written" || { echo "  FAIL: no hwcaps file"; return 1; }
+
+    echo "ui-test: tap btn_run (default suite, ~25s)"
+    ui_tap btn_run || { echo "  FAIL: locator btn_run not found"; return 1; }
+    local i ok=0
+    for i in $(seq 1 30); do
+        asroot "ls $FILES/benchmarks-*.json" >/dev/null 2>&1 && { ok=1; break; }
+        sleep 2
+    done
+    [ "$ok" = 1 ] && echo "  PASS: benchmark file written" || { echo "  FAIL: no benchmark file after Run"; return 1; }
+
+    echo "ui-test: PASS (locators resolved by content-desc, both jobs produced output)"
+}
+
+# Tap a UI element by its content-desc locator. Path-conversion off for the
+# local python.exe call (global MSYS_NO_PATHCONV=1 would mangle scripts/...).
+ui_tap() {
+    ( cd "$REPO" && MSYS_NO_PATHCONV=0 "${PYTHON:-python}" scripts/ui_tap.py "$SERIAL" tap desc "$1" )
+}
+
 probe() {
     require_device
     echo "root_method (registry): $(device_root_method "$SERIAL")"
@@ -228,6 +282,7 @@ case "$CMD" in
     pin-perf)  require_device; pin_perf ;;
     unpin)     require_device; unpin ;;
     install)   install_apk "$1" ;;
+    ui-test)   require_device; ui_test "${1:-}" ;;
     bench)     require_device; bench "${1:-}" ;;
     bench-stats) require_device; bench_stats "${1:-}" "${2:-7}" ;;
     full)
