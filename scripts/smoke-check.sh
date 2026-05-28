@@ -11,9 +11,11 @@ set -euo pipefail
 
 APK_PATH="${APK_PATH:-app/build/outputs/apk/debug/app-debug.apk}"
 PACKAGE="${PACKAGE:-com.example.cppandroidtest}"
-ACTIVITY="${ACTIVITY:-android.app.NativeActivity}"
+ACTIVITY="${ACTIVITY:-com.example.cppandroidtest.MainActivity}"
 LOG_TAG="${LOG_TAG:-CppAndroidTest}"
-EXPECT_LOG="${EXPECT_LOG:-Hello from C++ Native Activity}"
+# JNI_OnLoad fires from MainActivity's static initialiser
+# (System.loadLibrary("cppandroidtest")) as soon as the class is loaded.
+EXPECT_LOG="${EXPECT_LOG:-JNI_OnLoad: libcppandroidtest.so ready}"
 WAIT_SECONDS="${WAIT_SECONDS:-8}"
 
 echo "==> Uninstalling any previous install (debug keystore differs between CI runners)"

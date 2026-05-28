@@ -145,26 +145,23 @@ if(ANDROID_ABI STREQUAL "arm64-v8a")
 endif()
 
 # ----------------------------------------------------------------------------
-# native_app_glue
+# libcppandroidtest.so — loaded by MainActivity via System.loadLibrary.
+# The JNI bridge in jni.cpp (Java_com_example_cppandroidtest_MainActivity_*)
+# routes UI button taps into bench::registry::dispatch and the sensors /
+# camera enumerators. The legacy NativeActivity entry point (main.cpp +
+# android_native_app_glue + the '-u ANativeActivity_onCreate' link flag)
+# was removed when the Manifest switched to MainActivity — those code
+# paths were unreachable at runtime and just bloated the .so.
 # ----------------------------------------------------------------------------
-add_library(native_app_glue STATIC
-    ${ANDROID_NDK}/sources/android/native_app_glue/android_native_app_glue.c)
-target_include_directories(native_app_glue PUBLIC
-    ${ANDROID_NDK}/sources/android/native_app_glue)
-# Don't harden the NDK-shipped glue — it's not our code and won't pass our
-# strict warning set. Just optimise it.
-target_compile_options(native_app_glue PRIVATE -O3 -fdata-sections -ffunction-sections)
-
-# Force-keep ANativeActivity_onCreate or the dynamic linker can't find android_main.
-set(CMAKE_SHARED_LINKER_FLAGS
-    "${CMAKE_SHARED_LINKER_FLAGS} -u ANativeActivity_onCreate")
-
-# ----------------------------------------------------------------------------
-# libcppandroidtest.so — loaded by android.app.NativeActivity.
-# ----------------------------------------------------------------------------
-add_library(cppandroidtest SHARED main.cpp ${BENCH_SOURCES})
-target_link_libraries(cppandroidtest native_app_glue ${BENCH_LIBS})
+add_library(cppandroidtest SHARED jni.cpp ${BENCH_SOURCES})
+target_link_libraries(cppandroidtest ${BENCH_LIBS})
 harden_target(cppandroidtest)
+# jni.cpp uses [[maybe_unused]] params via JNIEnv conventions; -Wpedantic
+# can flag them in some clang versions. The harden_target options already
+# include -Wno-unused-parameter equivalence via -Werror gating, but JNI
+# code is a frequent false-positive source so we add a targeted opt-out.
+set_source_files_properties(jni.cpp PROPERTIES
+    COMPILE_OPTIONS "-Wno-error=unused-parameter")
 
 # ----------------------------------------------------------------------------
 # cppbench — standalone ARM64 ELF executable.
