@@ -170,6 +170,37 @@ install_apk() {
     adbx install -r "$(cygpath -w "$apk" 2>/dev/null || echo "$apk")"
 }
 
+# Multi-run: execute cppbench R times (as root, under whatever governor is
+# currently set — call pin-perf first for clean numbers), then aggregate
+# median + CV across runs to separate real throughput from DVFS/scheduler
+# noise (the A75 mid-cluster reads 14-19 GFLOPS run-to-run; the median tells
+# the truth, the CV flags the noise).
+bench_stats() {
+    local filter="${1:-}" runs="${2:-7}"
+    ensure_root
+    push_cppbench
+    mkdir -p "$RESULTS"
+    local ts label tag i out
+    ts=$(date +%Y%m%d-%H%M%S)
+    label=$(device_label "$SERIAL")
+    tag="${filter:-default}"
+    local args="--json"; [ -n "$filter" ] && args="$args --filter=$filter"
+    echo "bench-stats: $runs runs of '$REMOTE $args' (as root)"
+    local glob="$RESULTS/${label}-${tag}-stats-${ts}"
+    for i in $(seq 1 "$runs"); do
+        out="${glob}-run${i}.json"
+        asroot "$REMOTE $args" | tr -d '\r' > "$out"
+        printf "  run %d/%d -> %s (%s bytes)\n" "$i" "$runs" "$(basename "$out")" "$(wc -c < "$out")"
+    done
+    echo "--- aggregate ---"
+    # The aggregator is a local (no-adb) step, but our global MSYS_NO_PATHCONV=1
+    # would feed Windows python.exe an MSYS '/c/...' path it can't open. Run it
+    # from the repo with relative paths and path-conversion re-enabled just for
+    # this call.
+    ( cd "$REPO" && MSYS_NO_PATHCONV=0 "${PYTHON:-python}" scripts/aggregate-runs.py \
+        "results/$(basename "$glob")-run"*.json )
+}
+
 probe() {
     require_device
     echo "root_method (registry): $(device_root_method "$SERIAL")"
@@ -196,12 +227,22 @@ case "$CMD" in
     unpin)     require_device; unpin ;;
     install)   install_apk "$1" ;;
     bench)     require_device; bench "${1:-}" ;;
+    bench-stats) require_device; bench_stats "${1:-}" "${2:-7}" ;;
     full)
         require_device; ensure_root; pin_perf
         bench "${1:-}"
         unpin
         ;;
+    full-stats)
+        require_device; ensure_root; pin_perf
+        bench_stats "${1:-}" "${2:-7}"
+        unpin
+        ;;
     *)
-        echo "usage: $0 {probe|root|pin-perf|unpin|install <apk>|bench [filter]|full [filter]} [serial]"
+        echo "usage: $0 <cmd> [serial] [args]"
+        echo "  cmds: probe | root | pin-perf | unpin | install <apk>"
+        echo "        bench [filter] | bench-stats [filter] [runs]"
+        echo "        full [filter] | full-stats [filter] [runs]"
+        echo "  (full-stats = pin-perf -> N runs -> aggregate median/CV -> unpin)"
         exit 1 ;;
 esac
