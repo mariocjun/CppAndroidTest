@@ -83,9 +83,22 @@ The AVD is cached between runs (`actions/cache@v4` keyed on `avd-30-x86_64-v1`) 
 
 ## Performance benchmarking — `cppbench`
 
-The benchmark harness under `app/src/main/cpp/bench/` exists to compare **Galaxy Note10+ Exynos 9825 (SM-N975F)** against **Note10+ Snapdragon 855 (SM-N975U)**. It is intentionally NOT run in CI — perf numbers from a virtualized x86_64 emulator are meaningless. CI only compile-checks the harness (the bench sources are linked into `libcppandroidtest.so`, so any compilation failure surfaces through the smoke workflow).
+**Primary test device: Galaxy S24 Ultra 256 GB (Snapdragon 8 Gen 3 for Galaxy, ARMv9.2-A).** The user iterates fastest on this device, so calibrated expected ranges and new features (i8mm, SVE2, BF16, crypto) are tuned for the 8 Gen 3 microarchitecture. Note10+ (Exynos 9825 / Snapdragon 855) is a secondary comparison target — the harness stays portable and the ARMv9-specific paths gracefully degrade to `-1` on those devices.
 
-### Build the standalone ELF
+The benchmark harness under `app/src/main/cpp/bench/` is intentionally NOT run in CI — perf numbers from a virtualized x86_64 emulator are meaningless. CI only compile-checks the harness (the bench sources are linked into `libcppandroidtest.so`, so any compilation failure surfaces through the smoke workflow).
+
+### Fastest path: download the prebuilt ELF from a Release
+
+Each tagged release (`v*`) attaches the standalone `cppbench` arm64-v8a ELF as an asset alongside the APK. No NDK install needed locally:
+
+```bash
+gh release download --pattern 'cppbench-v*' --repo mariocjun/CppAndroidTest
+adb push cppbench-v*-arm64-v8a /data/local/tmp/cppbench
+adb shell chmod 755 /data/local/tmp/cppbench
+adb shell /data/local/tmp/cppbench --json
+```
+
+### Build the standalone ELF locally
 
 `scripts/build-bench.sh` runs CMake with the NDK toolchain directly, sets `-DBUILD_BENCH_EXECUTABLE=ON`, and produces `build/bench-arm64/cppbench` (ARM64 PIE ELF). It auto-locates NDK 26.x at the standard Android Studio install paths; override with `ANDROID_NDK=/path/to/ndk`.
 
@@ -121,6 +134,8 @@ Prints per-cluster STREAM bandwidth with ratios. Extend with more metrics as ben
 | `latency` | L1d/L2/SLC/DRAM latency in ns/load | Pointer-chase, random Hamiltonian cycle, 4 KB → 64 MB sweep | `bench/cpu/latency.cpp` |
 | `neon_fma` | Single-core peak GFLOPS (FP32+FP16) | `vfmaq_f32`/`vfmaq_f16` × 8 chains, gated on `fphp`/`asimdhp` | `bench/cpu/neon_fma.cpp` |
 | `dot_int8` | ARMv8.2-A SDOT/UDOT GOps/s | `vdotq_s32`/`vdotq_u32` × 8 chains, gated on `asimddp`. The TU is compiled with per-file `-march=armv8.2-a+dotprod` so other TUs don't acquire DOTPROD via autovectorization (would SIGILL on Exynos 9825 A75 cores). | `bench/cpu/dot_int8.cpp` |
+| `i8mm` | ARMv8.6-A SMMLA matrix multiply GOps/s | `vmmlaq_s32` × 8 chains — one instruction = 2×2 int8 block matmul = 32 ops. **S24 Ultra Cortex-X4** sustains ~350-450 GOps/s per core, roughly 2× SDOT. Per-file `-march=armv8.6-a+i8mm`. Note10+ generation lacks i8mm; benchmark reports `-1` there. | `bench/cpu/i8mm.cpp` |
+| `sve2` | ARMv9-A SVE2 FP32 GFLOPS | `svmla_f32_x` × 8 chains. Reports lane count + vector bit-width at runtime (S24 Ultra reports 4 lanes / 128 bits — same width as NEON but with predicates / gather / scatter primitives in the ISA). Per-file `-march=armv9-a+sve2`. No SVE on pre-ARMv9 (Note10+); reports `-1`. | `bench/cpu/sve2.cpp` |
 | `perf_counters` | PMU counters via `perf_event_open(2)` — cycles, instructions, cache refs/misses, branch instructions/mispredicts, page faults | Opens a grouped event set with `PERF_FORMAT_GROUP` on each cluster's top CPU, runs a small NEON FMA workload, reads counters. Reveals IPC, branch predictor accuracy, cache hierarchy efficiency per microarchitecture. Gracefully degrades to `pmu_available=false` when `kernel.perf_event_paranoid` blocks access (typical for app UID; works from `adb shell` which has `CAP_PERFMON` on Android 11+). | `bench/cpu/perf_counters.cpp` |
 | `sustained` | GFLOPS vs time + thermal + freq throttling curve | NEON FMA pinned to big core for `duration_sec`, sampling temps + freqs every `sample_interval_ms` (auto-rescaled chunk size to keep cadence honest as kernel throttles). Opt-in via `--filter=sustained` (heavy). | `bench/cpu/sustained.cpp` |
 
