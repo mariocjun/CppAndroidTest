@@ -16,6 +16,7 @@
 #pragma once
 
 #include "affinity.h"
+#include "diag.h"
 #include "json.h"
 
 #include "cpu/stream.h"
@@ -131,7 +132,9 @@ struct I8mmBench {
         if (a.iters > 0) c.iterations = a.iters;
         return c;
     }
-    static bool opt_in() { return false; }
+    // Opt-in until kernel HWCAP gating is validated against a SIGILL-free
+    // run on a real ARMv9 device. Run with --filter=i8mm to enable.
+    static bool opt_in() { return true; }
     bench::Json run_per_cluster(const Config& cfg,
                                 const std::vector<bench::CpuCluster>& cl) const {
         return bench::cpu::run_i8mm_per_cluster(cfg, cl);
@@ -146,7 +149,12 @@ struct Sve2Bench {
         if (a.iters > 0) c.iterations = a.iters;
         return c;
     }
-    static bool opt_in() { return false; }
+    // Opt-in until kernel HWCAP gating is validated. Some Android kernels
+    // (notably Samsung One UI on certain S24 firmwares) leave SVE userspace
+    // disabled despite the hardware supporting it; the runtime HWCAP check
+    // catches that, but until we've confirmed it on a real device we keep
+    // SVE2 out of the default suite.
+    static bool opt_in() { return true; }
     bench::Json run_per_cluster(const Config& cfg,
                                 const std::vector<bench::CpuCluster>& cl) const {
         return bench::cpu::run_sve2_per_cluster(cfg, cl);
@@ -215,8 +223,12 @@ dispatch(const Args& args, const std::vector<bench::CpuCluster>& clusters) {
         // Opt-in benchmarks require the filter to explicitly name them
         // (an empty filter selects "all default benchmarks", not opt-ins).
         if (B::opt_in() && args.filter.find(B::name) == std::string::npos) return;
+        // Tag the diag state so a fatal signal handler can identify which
+        // bench was active at crash time.
+        bench::diag::set_current(B::name);
         auto cfg = B::make_config(args);
         results.emplace_back(B::name, b.run_per_cluster(cfg, clusters));
+        bench::diag::set_current("(idle)");
     };
 
     // Materialise the tuple as an lvalue so std::apply unpacks it as lvalue

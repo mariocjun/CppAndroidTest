@@ -102,6 +102,8 @@ endfunction()
 # ----------------------------------------------------------------------------
 set(BENCH_SOURCES
     bench/affinity.cpp
+    bench/diag.cpp
+    bench/hwcaps.cpp
     bench/soc_info.cpp
     bench/thermal/sysfs.cpp
     bench/cpu/stream.cpp

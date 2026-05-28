@@ -11,7 +11,7 @@
 // benchmark returns -1 GOps and a flag.
 #include "i8mm.h"
 
-#include "../soc_info.h"
+#include "../hwcaps.h"
 #include "../timer.h"
 
 #if defined(__aarch64__) && defined(__ARM_FEATURE_MATMUL_INT8)
@@ -74,11 +74,10 @@ double measure_smmla(int64_t /*outer_iters*/) { return -1.0; }
 #endif
 
 bool i8mm_in_features() {
-    auto s = bench::collect_soc_info();
-    for (const auto& f : s.features) {
-        if (f == "i8mm") return true;
-    }
-    return false;
+    // HWCAP2_I8MM is the authoritative kernel-permission check; /proc/cpuinfo
+    // may report 'i8mm' on hardware that the kernel won't permit userspace
+    // to execute SMMLA on (and vice versa).
+    return bench::has_i8mm();
 }
 
 double best_of(int iters, int warmup, double (*fn)(int64_t), int64_t arg) {

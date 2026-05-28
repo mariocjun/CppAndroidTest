@@ -12,7 +12,7 @@
 // that when computing FLOPS.
 #include "sve2.h"
 
-#include "../soc_info.h"
+#include "../hwcaps.h"
 #include "../timer.h"
 
 #if defined(__aarch64__) && defined(__ARM_FEATURE_SVE2)
@@ -83,13 +83,12 @@ uint64_t vector_lanes_f32() { return 0; }
 #endif
 
 bool sve2_in_features() {
-    // We require sve2 specifically — sve1 alone wouldn't expose svmla_f32_x
-    // semantics we depend on. Devices that lack sve2 get -1 GOps.
-    auto s = bench::collect_soc_info();
-    for (const auto& f : s.features) {
-        if (f == "sve2") return true;
-    }
-    return false;
+    // HWCAP_SVE + HWCAP2_SVE2 is the *only* answer that matters. Samsung
+    // One UI on some S24 firmwares ships kernels with SVE userspace gated
+    // off despite the Cortex-X4/A720/A520 silicon supporting it — running
+    // any SVE instruction in that configuration SIGILLs. HWCAP reflects
+    // the kernel's policy, not what /proc/cpuinfo lists.
+    return bench::has_sve2();
 }
 
 double best_of(int iters, int warmup, double (*fn)(int64_t), int64_t arg) {

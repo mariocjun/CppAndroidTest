@@ -15,8 +15,8 @@
 // dotprod as unsupported.
 #include "dot_int8.h"
 
+#include "../hwcaps.h"
 #include "../timer.h"
-#include "../soc_info.h"
 
 #if defined(__aarch64__) && defined(__ARM_FEATURE_DOTPROD)
 #  include <arm_neon.h>
@@ -110,11 +110,11 @@ double measure_udot(int64_t) { return -1.0; }
 #endif
 
 bool dotprod_in_features() {
-    auto s = bench::collect_soc_info();
-    for (const auto& f : s.features) {
-        if (f == "asimddp") return true;
-    }
-    return false;
+    // getauxval(AT_HWCAP) reflects the kernel-permitted instruction set,
+    // not the silicon's. On some Android kernels /proc/cpuinfo's 'asimddp'
+    // token is present but the kernel still rejects SDOT instructions in
+    // userspace — HWCAP is the authoritative answer.
+    return bench::has_dotprod();
 }
 
 double best_of(int iters, int warmup, double (*fn)(int64_t), int64_t arg) {

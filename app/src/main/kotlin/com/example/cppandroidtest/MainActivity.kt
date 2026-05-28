@@ -1,17 +1,22 @@
-// MainActivity — the user-facing entry point. Loads libcppandroidtest.so,
-// drives the JNI bridge that returns benchmark / sensor / camera JSON.
+// MainActivity — user-facing entry. Loads libcppandroidtest.so, drives the
+// JNI bridge that returns benchmark / sensor / camera / hwcap JSON, and
+// handles crash-dump propagation.
 //
-// Resilience features added after a crash report from S24 Ultra:
-//   - Every native call is wrapped in try/catch so a Kotlin-side exception
-//     can't tear down the activity silently.
-//   - JSON output is pretty-printed via org.json.JSONObject.toString(2)
-//     so it's readable in the on-screen TextView.
-//   - A native crash dump (libcppandroidtest.so's signal handlers write to
-//     <internalFilesDir>/last-native-crash.json on SIGSEGV/SIGABRT/...) is
-//     checked on every onCreate; if present, the user is offered an Upload
-//     button next to the results pane.
-//   - Upload posts the current result text to paste.rs (an authentication-
-//     free public paste service) and shows the returned URL.
+// UI layout:
+//   filter row:  [ filter text input ] [ Run ]
+//   info row:    [ HW Capabilities ] [ Sensors ] [ Cameras ]
+//   action row:  [ Upload last result ]
+//   output:      scrollable monospace TextView (selectable)
+//
+// 'Run' uses the filter input — empty = default benchmark suite (everything
+// except opt-in: i8mm, sve2, sustained). Type 'stream' / 'latency' /
+// 'neon_fma' / 'dot_int8' / 'i8mm' / 'sve2' / 'sustained' to run just one.
+// 'sustained,perf_counters' for a comma list.
+//
+// HW Capabilities shows kernel-permitted ARMv8/ARMv9 extensions
+// (getauxval(AT_HWCAP) view). Useful BEFORE running an extension bench to
+// know whether it'll SIGILL on this kernel.
+
 package com.example.cppandroidtest
 
 import android.os.Bundle
@@ -21,6 +26,7 @@ import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -33,9 +39,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
-import java.io.BufferedReader
 import java.io.File
-import java.io.InputStreamReader
 import java.io.OutputStream
 import java.net.HttpURLConnection
 import java.net.URL
@@ -51,14 +55,16 @@ class MainActivity : AppCompatActivity() {
         private const val PASTE_ENDPOINT = "https://paste.rs/"
     }
 
-    // JNI surface — see app/src/main/cpp/jni.cpp.
     private external fun nativeSetCrashDir(internalDir: String)
-    private external fun nativeRunBenchmarks(externalDir: String?): String
+    private external fun nativeRunBenchmarks(externalDir: String?, filter: String): String
     private external fun nativeEnumerateSensors(): String
     private external fun nativeEnumerateCameras(): String
+    private external fun nativeHwcaps(): String
 
     private lateinit var output: TextView
+    private lateinit var filterField: EditText
     private lateinit var runBtn: Button
+    private lateinit var hwBtn: Button
     private lateinit var sensorsBtn: Button
     private lateinit var camerasBtn: Button
     private lateinit var uploadBtn: Button
@@ -68,8 +74,6 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Hand the JNI side a path for its native crash handler to write to.
-        // Has to happen before the user triggers any native work.
         nativeSetCrashDir(filesDir.absolutePath)
         setContentView(buildUi())
         showInitialBanner()
@@ -79,31 +83,51 @@ class MainActivity : AppCompatActivity() {
     // -- UI ------------------------------------------------------------------
 
     private fun buildUi(): View {
+        val padPx = (PADDING_DP * resources.displayMetrics.density).toInt()
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            val padPx = (PADDING_DP * resources.displayMetrics.density).toInt()
             setPadding(padPx, padPx, padPx, padPx)
         }
 
-        val buttonRow = LinearLayout(this).apply {
+        // Row 1: filter input + Run button
+        val filterRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
         }
-        runBtn     = btn("Run benchmarks") { triggerJob("benchmarks") }
-        sensorsBtn = btn("Sensors")        { triggerJob("sensors") }
-        camerasBtn = btn("Cameras")        { triggerJob("cameras") }
-        for (b in listOf(runBtn, sensorsBtn, camerasBtn)) {
-            b.layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
-            buttonRow.addView(b)
+        filterField = EditText(this).apply {
+            hint = "filter (empty = default suite; e.g. 'stream' or 'i8mm,sve2')"
+            textSize = 12f
+            layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
+            isSingleLine = true
         }
-        root.addView(buttonRow)
+        runBtn = btn("Run") { triggerBenchmarks(filterField.text.toString().trim()) }
+        runBtn.layoutParams = LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT)
+        filterRow.addView(filterField)
+        filterRow.addView(runBtn)
+        root.addView(filterRow)
 
+        // Row 2: HW caps / Sensors / Cameras (info buttons)
+        val infoRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
+        }
+        hwBtn      = btn("HW caps")  { triggerJob("hwcaps") }
+        sensorsBtn = btn("Sensors")  { triggerJob("sensors") }
+        camerasBtn = btn("Cameras")  { triggerJob("cameras") }
+        for (b in listOf(hwBtn, sensorsBtn, camerasBtn)) {
+            b.layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
+            infoRow.addView(b)
+        }
+        root.addView(infoRow)
+
+        // Row 3: Upload button (full-width)
         uploadBtn = btn("Upload last result") { uploadLast() }.apply {
             layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
             isEnabled = false
         }
         root.addView(uploadBtn)
 
+        // Output area
         val scroll = ScrollView(this).apply {
             layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f)
             isVerticalScrollBarEnabled = true
@@ -128,58 +152,72 @@ class MainActivity : AppCompatActivity() {
 
     private fun showInitialBanner() {
         val externalDir = getExternalFilesDir(null)?.absolutePath ?: "(none)"
-        output.text =
-            "Tap a button to start.\n\n" +
-            "• Run benchmarks — STREAM bandwidth, pointer-chase latency,\n" +
-            "  NEON FP32/FP16 FMA, SDOT int8, SMMLA i8mm, SVE2 FP32,\n" +
-            "  PMU counters (~15-20s on a flagship)\n" +
-            "• Sensors — every ASensorManager-visible sensor + metadata\n" +
-            "• Cameras — every Camera2 NDK camera + characteristics\n\n" +
-            "Output is JSON, pretty-printed below. Each run also saves to:\n" +
-            externalDir
+        output.text = buildString {
+            append("Quick start:\n")
+            append("  1. Tap 'HW caps' to see which CPU extensions the kernel permits.\n")
+            append("  2. Tap 'Run' (empty filter) for the default suite: STREAM /\n")
+            append("     pointer-chase latency / NEON FP32+FP16 FMA / SDOT int8 / PMU\n")
+            append("     counters.\n")
+            append("  3. To run a single bench, type its name in the filter box and tap\n")
+            append("     'Run'. Available: stream, latency, neon_fma, dot_int8,\n")
+            append("     i8mm (opt-in), sve2 (opt-in), perf_counters, sustained (opt-in).\n")
+            append("\n")
+            append("Each run also writes <kind>-YYYYMMDD-HHMMSS.json to:\n")
+            append("  ").append(externalDir).append("\n")
+        }
     }
 
     // -- Job dispatch --------------------------------------------------------
 
-    private fun triggerJob(kind: String) {
-        setBusy(true, "Running $kind…")
+    private fun triggerBenchmarks(filter: String) {
+        val label = if (filter.isEmpty()) "benchmarks" else "benchmarks[$filter]"
+        setBusy(true, "Running $label …")
         lifecycleScope.launch(Dispatchers.IO) {
             val externalDir = getExternalFilesDir(null)?.absolutePath
-            val rawJson: String = runCatching {
+            val raw = runCatching {
+                nativeRunBenchmarks(externalDir, filter)
+            }.getOrElse { t -> errorJson("triggerBenchmarks", "${t.javaClass.simpleName}: ${t.message}") }
+            finishJob(if (filter.isEmpty()) "benchmarks" else "benchmarks-$filter", raw, externalDir)
+        }
+    }
+
+    private fun triggerJob(kind: String) {
+        setBusy(true, "Running $kind …")
+        lifecycleScope.launch(Dispatchers.IO) {
+            val externalDir = getExternalFilesDir(null)?.absolutePath
+            val raw = runCatching {
                 when (kind) {
-                    "benchmarks" -> nativeRunBenchmarks(externalDir)
-                    "sensors"    -> nativeEnumerateSensors()
-                    "cameras"    -> nativeEnumerateCameras()
+                    "hwcaps"  -> nativeHwcaps()
+                    "sensors" -> nativeEnumerateSensors()
+                    "cameras" -> nativeEnumerateCameras()
                     else -> errorJson("triggerJob", "unknown kind: $kind")
                 }
-            }.getOrElse { t ->
-                errorJson("triggerJob", "${t.javaClass.simpleName}: ${t.message}")
-            }
+            }.getOrElse { t -> errorJson("triggerJob", "${t.javaClass.simpleName}: ${t.message}") }
+            finishJob(kind, raw, externalDir)
+        }
+    }
 
-            val pretty = prettify(rawJson)
-            // Persist the COMPACT form so file size stays small.
-            if (externalDir != null) {
-                val ts = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
-                runCatching {
-                    File(externalDir, "$kind-$ts.json").writeText(rawJson)
-                }
-            }
-
-            withContext(Dispatchers.Main) {
-                lastJson = rawJson
-                lastKind = kind
-                output.text = pretty
-                uploadBtn.isEnabled = true
-                setBusy(false, null)
-            }
+    private suspend fun finishJob(kind: String, raw: String, externalDir: String?) {
+        val pretty = prettify(raw)
+        if (externalDir != null) {
+            val ts = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+            runCatching { File(externalDir, "$kind-$ts.json").writeText(raw) }
+        }
+        withContext(Dispatchers.Main) {
+            lastJson = raw
+            lastKind = kind
+            output.text = pretty
+            uploadBtn.isEnabled = true
+            setBusy(false, null)
         }
     }
 
     private fun setBusy(busy: Boolean, msg: String?) {
         runBtn.isEnabled = !busy
+        hwBtn.isEnabled = !busy
         sensorsBtn.isEnabled = !busy
         camerasBtn.isEnabled = !busy
-        // Don't disable upload — uploading is independent.
+        filterField.isEnabled = !busy
         if (msg != null) output.text = msg
     }
 
@@ -194,8 +232,6 @@ class MainActivity : AppCompatActivity() {
                 else -> raw
             }
         }.getOrElse {
-            // org.json failed (corrupted JSON?). Show raw with the parse
-            // error appended so the user has SOMETHING to diagnose with.
             "$raw\n\n[prettify failed: ${(it as? JSONException)?.message ?: it.message}]"
         }
     }
@@ -214,7 +250,7 @@ class MainActivity : AppCompatActivity() {
             toast("Nothing to upload — run a job first.")
             return
         }
-        val payload = lastJson  // upload the compact form, paste.rs handles it
+        val payload = lastJson
         val labelKind = lastKind
         uploadBtn.isEnabled = false
         output.append("\n\n--- uploading to paste.rs … ---\n")
@@ -227,7 +263,7 @@ class MainActivity : AppCompatActivity() {
                             "Share this URL — it stays up for a few days.\n")
                     toast("Uploaded: $url")
                 } else {
-                    output.append(url + "\n")
+                    output.append("$url\n")
                     toast("Upload failed.")
                 }
                 uploadBtn.isEnabled = true
@@ -243,7 +279,7 @@ class MainActivity : AppCompatActivity() {
             connectTimeout = 15_000
             readTimeout = 15_000
             setRequestProperty("Content-Type", "text/plain; charset=utf-8")
-            setRequestProperty("User-Agent", "cppandroidtest/0.3")
+            setRequestProperty("User-Agent", "cppandroidtest/0.3.2")
         }
         try {
             conn.outputStream.use { os: OutputStream -> os.write(body.toByteArray(Charsets.UTF_8)) }
@@ -262,13 +298,12 @@ class MainActivity : AppCompatActivity() {
         val dump = File(filesDir, "last-native-crash.json")
         if (!dump.exists()) return
         val content = runCatching { dump.readText() }.getOrElse { return }
-        output.append("\n\n*** PREVIOUS NATIVE CRASH DETECTED ***\n$content\n" +
-                "Tap 'Upload last result' to share it for analysis.\n")
-        // Stash it as the "last result" so the upload button targets it.
+        output.append("\n\n*** PREVIOUS NATIVE CRASH DETECTED ***\n")
+        output.append(prettify(content))
+        output.append("\n\nTap 'Upload last result' to share it for analysis.\n")
         lastJson = content
         lastKind = "native-crash"
         uploadBtn.isEnabled = true
-        // Delete so we don't keep re-prompting forever.
         dump.delete()
     }
 

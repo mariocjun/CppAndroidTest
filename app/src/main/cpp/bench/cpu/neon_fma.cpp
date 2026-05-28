@@ -31,8 +31,8 @@
 // dependent op or check g_sink_fma_* is actually wired up.
 #include "neon_fma.h"
 
+#include "../hwcaps.h"
 #include "../timer.h"
-#include "../soc_info.h"
 
 #if defined(__aarch64__)
 #  include <arm_neon.h>
@@ -147,11 +147,8 @@ double measure_fp32(int64_t) { return -1.0; }
 #endif
 
 bool fphp_in_features() {
-    auto s = bench::collect_soc_info();
-    for (const auto& f : s.features) {
-        if (f == "fphp" || f == "asimdhp") return true;
-    }
-    return false;
+    // HWCAP_ASIMDHP — kernel-permission view of NEON FP16 arithmetic.
+    return bench::has_neon_fp16();
 }
 
 double best_of(int iters, int warmup, double (*fn)(int64_t), int64_t arg) {

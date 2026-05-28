@@ -13,6 +13,8 @@
 //      upload it.
 
 #include "bench/affinity.h"
+#include "bench/diag.h"
+#include "bench/hwcaps.h"
 #include "bench/json.h"
 #include "bench/registry.h"
 #include "bench/soc_info.h"
@@ -33,6 +35,7 @@
 #include <fcntl.h>
 #include <fstream>
 #include <string>
+#include <sys/ucontext.h>
 #include <unistd.h>
 
 #define LOG_TAG "CppAndroidTest"
@@ -105,47 +108,132 @@ std::string make_error_json(const char* where, const char* what) {
 }
 
 // -- Native crash handler ---------------------------------------------------
+//
+// SA_SIGINFO + 3-arg handler gives us siginfo_t (faulting address) and
+// ucontext_t (full register state at the moment of the trap). On arm64 the
+// program counter at the time of SIGILL is at ucontext->uc_mcontext.pc;
+// dumping that PLUS the libcppandroidtest.so base from /proc/self/maps lets
+// us turn the absolute PC into an offset we can resolve back to a symbol
+// offline via `llvm-addr2line -e libcppandroidtest.so <offset>`.
+//
+// Async-signal-safe constraints: no malloc, no iostreams, no locale, no
+// fprintf. We use open/write/close (POSIX async-signal-safe per POSIX.1) and
+// snprintf into a stack buffer (glibc/bionic's snprintf is signal-safe in
+// practice; the alternative `dprintf` is too).
 
-// async-signal-safe-ish: avoid malloc / iostreams / locale stuff. We only
-// use POSIX write() + snprintf with a fixed-size stack buffer. snprintf is
-// "implementation-defined" wrt signal safety but glibc/bionic's is fine in
-// practice; the alternative (dprintf) has the same limitation.
-[[noreturn]] void on_fatal_signal(int sig) {
+const char* sig_name(int sig) {
+    switch (sig) {
+        case SIGSEGV: return "SIGSEGV";
+        case SIGABRT: return "SIGABRT";
+        case SIGILL:  return "SIGILL";
+        case SIGBUS:  return "SIGBUS";
+        case SIGFPE:  return "SIGFPE";
+        default:      return "?";
+    }
+}
+
+// Read libcppandroidtest.so's load base from /proc/self/maps. Best-effort —
+// returns 0 on any failure. async-signal-safe (open/read/close only).
+uintptr_t find_so_base() {
+    int fd = ::open("/proc/self/maps", O_RDONLY);
+    if (fd < 0) return 0;
+    char buf[4096];
+    ssize_t n;
+    uintptr_t base = 0;
+    // Scan the first chunk for our library name. /proc/self/maps lines are
+    // typically <= 200 bytes and the .so usually appears in the first ~16 KB.
+    while ((n = ::read(fd, buf, sizeof(buf) - 1)) > 0) {
+        buf[n] = '\0';
+        const char* needle = "libcppandroidtest.so";
+        const char* p = std::strstr(buf, needle);
+        if (p) {
+            // Walk back to the start of the line, then parse the hex address.
+            while (p > buf && p[-1] != '\n') --p;
+            uintptr_t v = 0;
+            for (; *p && *p != '-'; ++p) {
+                char c = *p;
+                uintptr_t d;
+                if (c >= '0' && c <= '9') d = static_cast<uintptr_t>(c - '0');
+                else if (c >= 'a' && c <= 'f') d = static_cast<uintptr_t>(c - 'a' + 10);
+                else if (c >= 'A' && c <= 'F') d = static_cast<uintptr_t>(c - 'A' + 10);
+                else break;
+                v = (v << 4) | d;
+            }
+            base = v;
+            break;
+        }
+        if (n < static_cast<ssize_t>(sizeof(buf) - 1)) break;
+    }
+    ::close(fd);
+    return base;
+}
+
+[[noreturn]] void on_fatal_signal(int sig, siginfo_t* info, void* ucontext_v) {
     if (g_crash_dump_path[0]) {
         int fd = ::open(g_crash_dump_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (fd >= 0) {
-            char buf[256];
-            const char* name = "?";
-            switch (sig) {
-                case SIGSEGV: name = "SIGSEGV"; break;
-                case SIGABRT: name = "SIGABRT"; break;
-                case SIGILL:  name = "SIGILL";  break;
-                case SIGBUS:  name = "SIGBUS";  break;
-                case SIGFPE:  name = "SIGFPE";  break;
-                default: break;
+            // Extract PC. On arm64 ucontext_t::uc_mcontext is a sigcontext;
+            // its .pc field is the saved program counter.
+            uintptr_t pc = 0;
+            uintptr_t lr = 0;
+            if (ucontext_v) {
+                auto* uc = static_cast<ucontext_t*>(ucontext_v);
+#if defined(__aarch64__)
+                pc = static_cast<uintptr_t>(uc->uc_mcontext.pc);
+                // x30 is the link register on arm64. uc_mcontext.regs[30].
+                lr = static_cast<uintptr_t>(uc->uc_mcontext.regs[30]);
+#else
+                (void)uc;
+#endif
             }
+            uintptr_t fault_addr = info ? reinterpret_cast<uintptr_t>(info->si_addr) : 0;
+            uintptr_t so_base = find_so_base();
+            uintptr_t pc_offset = (so_base && pc > so_base) ? (pc - so_base) : 0;
+
+            const char* bench_name = bench::diag::get_current();
+            if (!bench_name) bench_name = "?";
+
+            char buf[768];
             int n = std::snprintf(buf, sizeof(buf),
-                "{\"crash\":true,\"signal\":%d,\"name\":\"%s\",\"unix_time\":%lld}\n",
-                sig, name, static_cast<long long>(std::time(nullptr)));
+                "{\"crash\":true,"
+                "\"signal\":%d,"
+                "\"name\":\"%s\","
+                "\"unix_time\":%lld,"
+                "\"current_bench\":\"%s\","
+                "\"pc\":\"0x%lx\","
+                "\"lr\":\"0x%lx\","
+                "\"faulting_addr\":\"0x%lx\","
+                "\"so_base\":\"0x%lx\","
+                "\"pc_offset\":\"0x%lx\","
+                "\"si_code\":%d}\n",
+                sig, sig_name(sig),
+                static_cast<long long>(std::time(nullptr)),
+                bench_name,
+                static_cast<unsigned long>(pc),
+                static_cast<unsigned long>(lr),
+                static_cast<unsigned long>(fault_addr),
+                static_cast<unsigned long>(so_base),
+                static_cast<unsigned long>(pc_offset),
+                info ? info->si_code : 0);
             if (n > 0) {
                 ssize_t written = ::write(fd, buf, static_cast<size_t>(n));
-                (void)written;  // best-effort, we're about to die anyway
+                (void)written;
             }
             ::close(fd);
         }
     }
-    // Restore default handler and re-raise so the OS still gets a proper
-    // tombstone in /data/tombstones.
+    // Restore default handler and re-raise so the OS still produces a
+    // tombstone in /data/tombstones (visible via 'adb bugreport').
     std::signal(sig, SIG_DFL);
     std::raise(sig);
-    _exit(128 + sig);  // unreachable, but keeps [[noreturn]] honest
+    _exit(128 + sig);
 }
 
 void install_signal_handlers() {
     struct sigaction sa{};
-    sa.sa_handler = on_fatal_signal;
+    sa.sa_sigaction = on_fatal_signal;
     sigemptyset(&sa.sa_mask);
-    sa.sa_flags = SA_RESETHAND;
+    sa.sa_flags = SA_SIGINFO | SA_RESETHAND;
     for (int sig : {SIGSEGV, SIGABRT, SIGILL, SIGBUS, SIGFPE}) {
         sigaction(sig, &sa, nullptr);
     }
@@ -177,13 +265,15 @@ Java_com_example_cppandroidtest_MainActivity_nativeSetCrashDir(
 
 JNIEXPORT jstring JNICALL
 Java_com_example_cppandroidtest_MainActivity_nativeRunBenchmarks(
-    JNIEnv* env, jobject /*this*/, jstring jExternalDir) {
-    LOGI("nativeRunBenchmarks: start");
+    JNIEnv* env, jobject /*this*/, jstring jExternalDir, jstring jFilter) {
     const std::string out_dir = jstring_to_std(env, jExternalDir);
+    const std::string filter  = jstring_to_std(env, jFilter);
+    LOGI("nativeRunBenchmarks: start, filter='%s'", filter.c_str());
 
     try {
         auto clusters = bench::detect_clusters();
         bench::registry::Args args{};
+        args.filter = filter;
         auto results = bench::registry::dispatch(args, clusters);
 
         bench::Json top;
@@ -226,6 +316,28 @@ Java_com_example_cppandroidtest_MainActivity_nativeEnumerateSensors(
     } catch (...) {
         return env->NewStringUTF(
             make_error_json("nativeEnumerateSensors", "unknown C++ exception").c_str());
+    }
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_example_cppandroidtest_MainActivity_nativeHwcaps(
+    JNIEnv* env, jobject /*this*/) {
+    // Authoritative kernel view of which extensions userspace can use.
+    // Surfaced to the UI so the user can see *before* running a bench
+    // whether (for instance) SVE2 is going to SIGILL or work.
+    try {
+        bench::Json j;
+        j.kv("hwcap_raw",  static_cast<int64_t>(bench::raw_hwcap()))
+         .kv("hwcap2_raw", static_cast<int64_t>(bench::raw_hwcap2()))
+         .kv("neon_fp16", bench::has_neon_fp16())
+         .kv("dotprod",   bench::has_dotprod())
+         .kv("i8mm",      bench::has_i8mm())
+         .kv("sve",       bench::has_sve())
+         .kv("sve2",      bench::has_sve2())
+         .kv("bf16",      bench::has_bf16());
+        return env->NewStringUTF(j.str().c_str());
+    } catch (const std::exception& e) {
+        return env->NewStringUTF(make_error_json("nativeHwcaps", e.what()).c_str());
     }
 }
 
