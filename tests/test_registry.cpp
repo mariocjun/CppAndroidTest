@@ -107,13 +107,27 @@ TEST_CASE("substring matching: 'alpha' matches 'alpha', not 'beta_optin'") {
     CHECK(results[0].first == "alpha");
 }
 
-TEST_CASE("filter substring matches multiple wrappers if both names contain it") {
-    // Trick: 'a' is in 'alpha' AND 'beta_optin'. But opt-in needs the FULL
-    // name 'beta_optin' to appear in the filter to be selected — so 'a' only
-    // runs 'alpha'.
-    auto results = dispatch({.filter = "a"});
-    REQUIRE(results.size() == 1);
-    CHECK(results[0].first == "alpha");
+TEST_CASE("wanted() semantics: filter must CONTAIN the wrapper name, not the other way around") {
+    // The production wanted() helper does `filter.find(name) != npos`. So a
+    // short filter like 'a' must contain the full string 'alpha' to match —
+    // which it cannot. Comma-separated filters like 'alpha,beta_optin' work
+    // because they contain both names as substrings.
+    SUBCASE("'a' matches nothing (filter doesn't contain any name)") {
+        auto results = dispatch({.filter = "a"});
+        CHECK(results.empty());
+    }
+    SUBCASE("'alpha' matches only DefaultBench") {
+        auto results = dispatch({.filter = "alpha"});
+        REQUIRE(results.size() == 1);
+        CHECK(results[0].first == "alpha");
+    }
+    SUBCASE("comma-list 'alpha,beta_optin' selects both") {
+        auto results = dispatch({.filter = "alpha,beta_optin"});
+        REQUIRE(results.size() == 2);
+        // Tuple order: DefaultBench first, OptInBench second.
+        CHECK(results[0].first == "alpha");
+        CHECK(results[1].first == "beta_optin");
+    }
 }
 
 TEST_CASE("dispatch results contain the JSON each wrapper produced") {

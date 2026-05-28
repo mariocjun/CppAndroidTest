@@ -33,7 +33,15 @@ This requires a standalone `gradle` binary on PATH (or use Android Studio's bund
 ./gradlew clean
 ```
 
-There are **no tests** in this project (no unit tests, no instrumentation tests). Do not invent test commands.
+Unit tests live in `tests/` and target the platform-agnostic pieces of the bench harness (`bench::Json`, the `Benchmark<T>` concept dispatch). They are a **host build** — no NDK involved — driven by `tests/CMakeLists.txt`:
+
+```bash
+cmake -S tests -B tests/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build tests/build
+ctest --test-dir tests/build --output-on-failure
+```
+
+doctest 2.4.11 is fetched via CMake `FetchContent` (no vendored blob). Android-specific code (sensors, camera, sysfs, NEON intrinsics) is integration-tested by the smoke workflow's emulator run — not unit-tested.
 
 ## Release flow
 
@@ -113,6 +121,7 @@ Prints per-cluster STREAM bandwidth with ratios. Extend with more metrics as ben
 | `latency` | L1d/L2/SLC/DRAM latency in ns/load | Pointer-chase, random Hamiltonian cycle, 4 KB → 64 MB sweep | `bench/cpu/latency.cpp` |
 | `neon_fma` | Single-core peak GFLOPS (FP32+FP16) | `vfmaq_f32`/`vfmaq_f16` × 8 chains, gated on `fphp`/`asimdhp` | `bench/cpu/neon_fma.cpp` |
 | `dot_int8` | ARMv8.2-A SDOT/UDOT GOps/s | `vdotq_s32`/`vdotq_u32` × 8 chains, gated on `asimddp`. The TU is compiled with per-file `-march=armv8.2-a+dotprod` so other TUs don't acquire DOTPROD via autovectorization (would SIGILL on Exynos 9825 A75 cores). | `bench/cpu/dot_int8.cpp` |
+| `perf_counters` | PMU counters via `perf_event_open(2)` — cycles, instructions, cache refs/misses, branch instructions/mispredicts, page faults | Opens a grouped event set with `PERF_FORMAT_GROUP` on each cluster's top CPU, runs a small NEON FMA workload, reads counters. Reveals IPC, branch predictor accuracy, cache hierarchy efficiency per microarchitecture. Gracefully degrades to `pmu_available=false` when `kernel.perf_event_paranoid` blocks access (typical for app UID; works from `adb shell` which has `CAP_PERFMON` on Android 11+). | `bench/cpu/perf_counters.cpp` |
 | `sustained` | GFLOPS vs time + thermal + freq throttling curve | NEON FMA pinned to big core for `duration_sec`, sampling temps + freqs every `sample_interval_ms` (auto-rescaled chunk size to keep cadence honest as kernel throttles). Opt-in via `--filter=sustained` (heavy). | `bench/cpu/sustained.cpp` |
 
 CLI: `cppbench [--json] [--filter=NAME] [--iters=N] [--elems=N] [--list]`. Each benchmark is run per cluster (LITTLE / mid / big) using `sched_setaffinity` to pin to that cluster's CPUs. Cluster topology is discovered at runtime from `/sys/devices/system/cpu/cpu*/cpufreq/cpuinfo_max_freq` — no SoC-specific hardcoding.
