@@ -226,6 +226,10 @@ ui_test() {
     local FILES=/storage/emulated/0/Android/data/$PKG/files
     local PY="${PYTHON:-python}"
     echo "ui-test: install $apk"
+    # Uninstall first: release APKs are debug-signed with an EPHEMERAL keystore
+    # generated per CI run, so a newer build won't install over an older one
+    # (INSTALL_FAILED_UPDATE_INCOMPATIBLE: signatures do not match).
+    adbx uninstall "$PKG" >/dev/null 2>&1 || true
     adbx install -r "$(cygpath -w "$apk" 2>/dev/null || echo "$apk")" >/dev/null
     ensure_root  # so we can read/clear the app's external files dir
     asroot "rm -f $FILES/hwcaps-*.json $FILES/benchmarks-*.json" 2>/dev/null || true
