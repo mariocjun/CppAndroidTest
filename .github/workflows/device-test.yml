@@ -25,8 +25,15 @@ on:
         description: "number of runs to aggregate (median/CV)"
         required: false
         default: "7"
-  release:
-    types: [published]
+  # A release published by the release workflow uses GITHUB_TOKEN, and events
+  # raised by GITHUB_TOKEN do NOT trigger further workflows (anti-recursion).
+  # So `on: release` never fires for our auto-published releases. Instead we
+  # chain off the release workflow's completion via workflow_run — which fires
+  # regardless of the token, runs in the base-repo context (safe for the
+  # self-hosted runner), and lets us gate on the build having succeeded.
+  workflow_run:
+    workflows: ["Build and Release APK + cppbench"]
+    types: [completed]
 
 permissions:
   contents: read
@@ -37,8 +44,12 @@ concurrency:
 
 jobs:
   bench-on-device:
-    # Second line of defence on top of the owner-only triggers above.
-    if: github.repository_owner == 'mariocjun'
+    # Owner-only (second line of defence on top of the owner-only triggers),
+    # and when chained off the release workflow, only if that build succeeded
+    # (no point benchmarking a release that failed to produce an APK).
+    if: >-
+      github.repository_owner == 'mariocjun' &&
+      (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
     runs-on: [self-hosted, n975f]
     timeout-minutes: 20
     steps:
@@ -93,7 +104,7 @@ jobs:
           # (btn_hwcaps / btn_run) — resolution- and layout-independent. Fails
           # the build if a locator can't be resolved (i.e. a button id changed
           # or vanished) or a tapped job produces no output file.
-          bash scripts/device-harness.sh ui-test build/CppAndroidTest-release.apk
+          bash scripts/device-harness.sh ui-test REDACTED_SERIAL build/CppAndroidTest-release.apk
 
       - name: Upload result artifacts
         if: always()
