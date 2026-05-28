@@ -235,7 +235,7 @@ bash scripts/device-harness.sh install REDACTED_SERIAL <apk>
 
 ### Self-hosted CI — `.github/workflows/device-test.yml`
 
-A self-hosted runner (`redacted-runner`, labels `self-hosted,n975f`) on the dev PC runs the suite on the physical N975F. Triggers are **owner-only** (`workflow_dispatch` + `release:published`, never `pull_request`) because the repo is public — a self-hosted runner on a public repo must never be reachable by fork PRs. Plus a `github.repository_owner == 'mariocjun'` guard.
+A self-hosted runner (`redacted-runner`, labels `self-hosted,n975f`) on the dev PC runs the suite on the physical N975F. The only trigger is **`workflow_dispatch`** (owner-only) plus a `github.repository_owner == 'mariocjun'` guard — critical because the repo is public and a self-hosted runner must never be reachable by fork PRs. On a tag release, `release.yml`'s final step dispatches this workflow explicitly via `gh workflow run` (this beats `on:release`, which GITHUB_TOKEN can't fire, and `workflow_run`, which proved unreliable). So: `git tag vX` → build+publish → auto-dispatch → N975F bench + content-desc UI smoke test. The UI test (`scripts/ui_tap.py` + `device-harness.sh ui-test`) locates buttons by **content-description test IDs** (`btn_run`, `btn_hwcaps`, …) read from the live uiautomator tree, not pixel coordinates — survives layout/resolution changes.
 
 Runner location: `C:\Users\MarioCordeiroJunior\actions-runner-cppandroid`. Persistence: a current-user **logon Task Scheduler task** (`GitHubRunner-cppandroidtest-N975F`, no admin) auto-starts it. For a proper Windows service (survives without an interactive logon), run as **admin** once: `cd <runner>; .\svc.cmd install; .\svc.cmd start`.
 
