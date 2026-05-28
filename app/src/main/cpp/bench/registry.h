@@ -22,6 +22,8 @@
 #include "cpu/latency.h"
 #include "cpu/neon_fma.h"
 #include "cpu/dot_int8.h"
+#include "cpu/i8mm.h"
+#include "cpu/sve2.h"
 #include "cpu/sustained.h"
 #include "cpu/perf_counters.h"
 
@@ -121,6 +123,36 @@ struct DotInt8Bench {
     }
 };
 
+struct I8mmBench {
+    static constexpr const char* name = "i8mm";
+    using Config = bench::cpu::I8mmConfig;
+    static Config make_config(const Args& a) {
+        Config c;
+        if (a.iters > 0) c.iterations = a.iters;
+        return c;
+    }
+    static bool opt_in() { return false; }
+    bench::Json run_per_cluster(const Config& cfg,
+                                const std::vector<bench::CpuCluster>& cl) const {
+        return bench::cpu::run_i8mm_per_cluster(cfg, cl);
+    }
+};
+
+struct Sve2Bench {
+    static constexpr const char* name = "sve2";
+    using Config = bench::cpu::Sve2Config;
+    static Config make_config(const Args& a) {
+        Config c;
+        if (a.iters > 0) c.iterations = a.iters;
+        return c;
+    }
+    static bool opt_in() { return false; }
+    bench::Json run_per_cluster(const Config& cfg,
+                                const std::vector<bench::CpuCluster>& cl) const {
+        return bench::cpu::run_sve2_per_cluster(cfg, cl);
+    }
+};
+
 struct SustainedBench {
     static constexpr const char* name = "sustained";
     using Config = bench::cpu::SustainedConfig;
@@ -149,7 +181,8 @@ struct PerfCountersBench {
 // Adding a benchmark: write the wrapper above, then add its type here.
 // The Benchmark<T> concept blocks compilation if the wrapper is malformed.
 using Registry = std::tuple<StreamBench, LatencyBench, NeonFmaBench,
-                            DotInt8Bench, PerfCountersBench, SustainedBench>;
+                            DotInt8Bench, I8mmBench, Sve2Bench,
+                            PerfCountersBench, SustainedBench>;
 
 // Static check: every wrapper in Registry satisfies Benchmark<T>.
 template <typename... Bs>

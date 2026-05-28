@@ -108,6 +108,8 @@ set(BENCH_SOURCES
     bench/cpu/latency.cpp
     bench/cpu/neon_fma.cpp
     bench/cpu/dot_int8.cpp
+    bench/cpu/i8mm.cpp
+    bench/cpu/sve2.cpp
     bench/cpu/sustained.cpp
     bench/cpu/perf_counters.cpp
     bench/sensors/sensors.cpp
@@ -124,8 +126,22 @@ set(BENCH_LIBS android camera2ndk log)
 #   - The dot_int8 measurement functions runtime-gate on /proc/cpuinfo's
 #     'asimddp' feature, so they're never invoked on a non-DotProd core.
 if(ANDROID_ABI STREQUAL "arm64-v8a")
+    # dot_int8: SDOT/UDOT need ARMv8.2-A + DotProd (Cortex-A55 / A75 / M4 /
+    # Kryo 485 baseline). Note10+ has it on all clusters except A75 (Exynos
+    # 9825 mid cluster).
     set_source_files_properties(bench/cpu/dot_int8.cpp PROPERTIES
         COMPILE_OPTIONS "-march=armv8.2-a+dotprod")
+
+    # i8mm: SMMLA/UMMLA/USMMLA — ARMv8.6-A extension. Cortex-X4 / A720 / A520
+    # (S24 Ultra) all support it. Note10+ generation does NOT. The runtime
+    # gate (cpuinfo 'i8mm') prevents execution on unsupported cores.
+    set_source_files_properties(bench/cpu/i8mm.cpp PROPERTIES
+        COMPILE_OPTIONS "-march=armv8.6-a+i8mm")
+
+    # sve2: Scalable Vector Extension 2 — ARMv9-A baseline. S24 Ultra (8 Gen 3)
+    # has 128-bit SVE2. Note10+ has no SVE at all.
+    set_source_files_properties(bench/cpu/sve2.cpp PROPERTIES
+        COMPILE_OPTIONS "-march=armv9-a+sve2")
 endif()
 
 # ----------------------------------------------------------------------------
