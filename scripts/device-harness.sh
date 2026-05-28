@@ -67,6 +67,12 @@ device_label() {
 adbx()    { adb -s "$SERIAL" "$@"; }
 asroot()  { adb -s "$SERIAL" shell "su -c '$1'"; }
 
+# Repo slug for release-asset downloads. Auto-detected from the git remote so
+# this harness works unchanged in any fork; override with REPO_SLUG=owner/name.
+repo_slug() {
+    echo "${REPO_SLUG:-$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "")}"
+}
+
 # --- Gates ------------------------------------------------------------------
 require_device() {
     adbx get-state >/dev/null 2>&1 \
@@ -126,13 +132,10 @@ resolve_cppbench() {
     local dl="$REPO/build/cppbench-release"
     mkdir -p "$(dirname "$dl")"
     echo "cppbench not at $p — downloading latest release asset..." >&2
-    local url
-    url=$(gh release view --repo mariocjun/CppAndroidTest --json assets \
-            --jq '.assets[] | select(.name|startswith("cppbench-")) | .url' 2>/dev/null | head -1)
-    [ -n "$url" ] || { echo "FAIL: could not resolve a cppbench release asset" >&2; exit 1; }
-    gh release download --repo mariocjun/CppAndroidTest --pattern 'cppbench-*-arm64-v8a' \
+    local slug; slug=$(repo_slug)
+    gh release download ${slug:+--repo "$slug"} --pattern 'cppbench-*-arm64-v8a' \
         --output "$dl" --clobber >&2 \
-        || { echo "FAIL: gh release download failed (auth? set GH_TOKEN)" >&2; exit 1; }
+        || { echo "FAIL: gh release download failed (auth? set GH_TOKEN / REPO_SLUG)" >&2; exit 1; }
     [ -f "$dl" ] || { echo "FAIL: download did not produce $dl" >&2; exit 1; }
     echo "$dl"
 }
@@ -213,7 +216,8 @@ resolve_apk() {
     local dl="$REPO/build/CppAndroidTest-release.apk"
     if [ ! -f "$dl" ]; then
         mkdir -p "$(dirname "$dl")"
-        gh release download --repo mariocjun/CppAndroidTest --pattern '*.apk' \
+        local slug; slug=$(repo_slug)
+        gh release download ${slug:+--repo "$slug"} --pattern '*.apk' \
             --output "$dl" --clobber >&2 \
             || { echo "FAIL: could not download release APK" >&2; exit 1; }
     fi
